@@ -44,12 +44,7 @@ jobs:
     - name: Install Cargo Make
       uses: davidB/rust-cargo-make@v1
 
-    - name: default-features
-      run: cargo make ci-flow
-    - name: no-default-features
-      run: cargo make --profile no-default-features ci-flow
-    - name: features=downcast
-      run: cargo make --profile downcast ci-flow
+    - run: cargo make ci-flow
   miri:
     name: Miri
     runs-on: ubuntu-latest

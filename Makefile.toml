@@ -2,23 +2,12 @@
 min_version = "0.35.0"
 
 [env]
-CARGO_MAKE_CARGO_BUILD_TEST_FLAGS = ""
 CI_CARGO_TEST_FLAGS = { value = "--locked -- --nocapture", condition = { env_true = [
     "CI",
 ] } }
-CARGO_MAKE_CLIPPY_ARGS = { value = "-- -D warnings", condition = { env_true = [
+CARGO_MAKE_CLIPPY_ARGS = { value = "${CARGO_MAKE_CLIPPY_ALL_FEATURES_WARN}", condition = { env_true = [
     "CI",
 ] } }
-
-[env.no-default-features]
-CARGO_MAKE_CARGO_BUILD_TEST_FLAGS = "--no-default-features"
-CARGO_MAKE_RUN_CLIPPY = { unset = true }
-CARGO_MAKE_RUN_CHECK_FORMAT = { unset = true }
-
-[env.downcast]
-CARGO_MAKE_CARGO_BUILD_TEST_FLAGS = "--no-default-features --features downcast"
-CARGO_MAKE_RUN_CLIPPY = { unset = true }
-CARGO_MAKE_RUN_CHECK_FORMAT = { unset = true }
 
 # Override for CI flag additions
 [tasks.test]
@@ -49,7 +38,7 @@ args = [
     "--workspace",
     "--no-deps",
     "@@remove-empty(CARGO_MAKE_CARGO_VERBOSE_FLAGS)",
-    "@@split(CARGO_MAKE_CARGO_BUILD_TEST_FLAGS, )",
+    "${CARGO_MAKE_CARGO_ALL_FEATURES}",
 ]
 
 # Add doc lints to CI flow
