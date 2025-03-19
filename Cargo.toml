@@ -6,3 +6,4 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
+linkme = "0.3.32"
