@@ -238,6 +238,6 @@ where
     }
 }
 
-impl<'_, M, C, S> FusedIterator for PluginIdIter<'_, M, C, S> where S: AsRef<str> {}
+impl<M, C, S> FusedIterator for PluginIdIter<'_, M, C, S> where S: AsRef<str> {}
 
-impl<'_, M, C, S> ExactSizeIterator for PluginIdIter<'_, M, C, S> where S: AsRef<str> {}
+impl<M, C, S> ExactSizeIterator for PluginIdIter<'_, M, C, S> where S: AsRef<str> {}
