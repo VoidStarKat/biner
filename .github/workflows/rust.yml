@@ -31,20 +31,25 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-      
+
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ matrix.rust }}
         components: clippy,rustfmt
-        
+
     - name: Cache Dependencies
       uses: Swatinem/rust-cache@v2
-      
+
     - name: Install Cargo Make
       uses: davidB/rust-cargo-make@v1
-        
-    - run: cargo make ci-flow
+
+    - name: default-features
+      run: cargo make ci-flow
+    - name: no-default-features
+      run: cargo make --profile no-default-features ci-flow
+    - name: features=downcast
+      run: cargo make --profile downcast ci-flow
   miri:
     name: Miri
     runs-on: ubuntu-latest

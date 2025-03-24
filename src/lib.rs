@@ -1,11 +1,25 @@
 use std::{
-    any::Any,
     borrow::Borrow,
     collections::{HashMap, hash_map},
     fmt::Debug,
     hash::Hash,
     iter::FusedIterator,
 };
+
+#[cfg(all(feature = "downcast-rs", feature = "downcast"))]
+compile_error!(
+    "Cargo features 'downcast-rs' and 'downcast' are mutually exclusive features and
+ cannot both be enabled at the same time"
+);
+
+#[cfg(not(any(feature = "downcast-rs", feature = "downcast")))]
+use std::any::Any;
+
+#[cfg(feature = "downcast-rs")]
+use downcast_rs::{DowncastSync, impl_downcast};
+
+#[cfg(feature = "downcast")]
+use downcast::{AnySync, downcast_sync};
 
 pub trait PluginManifest<S> {
     fn id(&self) -> &S;
@@ -36,12 +50,31 @@ where
     }
 }
 
-pub trait Plugin<C>: Any + Send + Sync {
-    fn load(&mut self, _: &mut C) {}
-    fn unload(&mut self, _: &mut C) {}
-    fn enable(&mut self, _: &mut C) {}
-    fn disable(&mut self, _: &mut C) {}
+macro_rules! decl_plugin_trait {
+    ($($traits:ident),+) => {
+        pub trait Plugin<C>: $($traits+)+ {
+            fn load(&mut self, _: &mut C) {}
+            fn unload(&mut self, _: &mut C) {}
+            fn enable(&mut self, _: &mut C) {}
+            fn disable(&mut self, _: &mut C) {}
+        }
+    };
 }
+
+#[cfg(not(any(feature = "downcast-rs", feature = "downcast")))]
+decl_plugin_trait!(Any, Send, Sync);
+
+#[cfg(feature = "downcast-rs")]
+decl_plugin_trait!(DowncastSync);
+
+#[cfg(feature = "downcast-rs")]
+impl_downcast!(sync Plugin<C>);
+
+#[cfg(feature = "downcast")]
+decl_plugin_trait!(AnySync);
+
+#[cfg(feature = "downcast")]
+downcast_sync!(<C> dyn Plugin<C>);
 
 struct PluginState<M, C> {
     manifest: M,
@@ -208,6 +241,58 @@ where
         } else {
             false
         }
+    }
+
+    #[cfg(feature = "downcast-rs")]
+    pub fn get<T, Q>(&self, id: &Q) -> Option<&T>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        T: Plugin<C>,
+        C: 'static,
+    {
+        self.plugins
+            .get(id)
+            .and_then(|s| s.plugin.as_ref().downcast_ref())
+    }
+
+    #[cfg(feature = "downcast-rs")]
+    pub fn get_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        T: Plugin<C>,
+        C: 'static,
+    {
+        self.plugins
+            .get_mut(id)
+            .and_then(|s| s.plugin.as_mut().downcast_mut())
+    }
+
+    #[cfg(feature = "downcast")]
+    pub fn get<T, Q>(&self, id: &Q) -> Option<&T>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        T: Plugin<C>,
+        C: 'static,
+    {
+        self.plugins
+            .get(id)
+            .and_then(|s| s.plugin.as_ref().downcast_ref().ok())
+    }
+
+    #[cfg(feature = "downcast")]
+    pub fn get_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        T: Plugin<C>,
+        C: 'static,
+    {
+        self.plugins
+            .get_mut(id)
+            .and_then(|s| s.plugin.as_mut().downcast_mut().ok())
     }
 }
 
