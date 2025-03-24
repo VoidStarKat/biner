@@ -96,11 +96,11 @@ where
 }
 
 #[derive(Debug, Default)]
-pub struct PluginRegistry<M, C, S = String> {
+pub struct PluginRegistry<S = String, M = SimplePluginManifest<S>, C = ()> {
     plugins: HashMap<S, PluginState<M, C>>,
 }
 
-impl<M, C, S> PluginRegistry<M, C, S>
+impl<S, M, C> PluginRegistry<S, M, C>
 where
     M: PluginManifest<S>,
 {
@@ -115,19 +115,19 @@ where
     }
 }
 
-impl<M, C, S> PluginRegistry<M, C, S>
+impl<S, M, C> PluginRegistry<S, M, C>
 where
     M: PluginManifest<S>,
     S: AsRef<str>,
 {
-    pub fn plugin_ids(&self) -> PluginIdIter<M, C, S> {
+    pub fn plugin_ids(&self) -> PluginIdIter<S, M, C> {
         PluginIdIter {
             iter: self.plugins.keys(),
         }
     }
 }
 
-impl<M, C, S> PluginRegistry<M, C, S>
+impl<S, M, C> PluginRegistry<S, M, C>
 where
     M: PluginManifest<S>,
     S: Eq + Hash,
@@ -141,7 +141,7 @@ where
     }
 }
 
-impl<M, C, S> PluginRegistry<M, C, S>
+impl<S, M, C> PluginRegistry<S, M, C>
 where
     S: Eq + Hash,
 {
@@ -170,7 +170,7 @@ where
     }
 }
 
-impl<M, C, S> PluginRegistry<M, C, S>
+impl<S, M, C> PluginRegistry<S, M, C>
 where
     M: PluginManifest<S>,
     S: Eq + Hash + Clone,
@@ -197,7 +197,7 @@ where
     }
 }
 
-impl<M, C, S> PluginRegistry<M, C, S>
+impl<S, M, C> PluginRegistry<S, M, C>
 where
     S: Eq + Hash,
     C: 'static,
@@ -302,11 +302,11 @@ where
 }
 
 #[derive(Debug)]
-pub struct PluginIdIter<'a, M, C, S> {
+pub struct PluginIdIter<'a, S, M, C> {
     iter: hash_map::Keys<'a, S, PluginState<M, C>>,
 }
 
-impl<'a, M, C, S> Iterator for PluginIdIter<'a, M, C, S>
+impl<'a, S, M, C> Iterator for PluginIdIter<'a, S, M, C>
 where
     S: AsRef<str>,
 {
@@ -328,6 +328,6 @@ where
     }
 }
 
-impl<M, C, S> FusedIterator for PluginIdIter<'_, M, C, S> where S: AsRef<str> {}
+impl<S, M, C> FusedIterator for PluginIdIter<'_, S, M, C> where S: AsRef<str> {}
 
-impl<M, C, S> ExactSizeIterator for PluginIdIter<'_, M, C, S> where S: AsRef<str> {}
+impl<S, M, C> ExactSizeIterator for PluginIdIter<'_, S, M, C> where S: AsRef<str> {}
