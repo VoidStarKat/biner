@@ -1,3 +1,4 @@
+use crate::hook::{HookRegistry, HookSlot};
 use std::{
     borrow::Borrow,
     collections::{HashMap, hash_map},
@@ -6,11 +7,11 @@ use std::{
     iter::FusedIterator,
 };
 
-#[cfg(not(any(feature = "downcast-rs", feature = "downcast")))]
-use std::any::Any;
-
 #[cfg(feature = "downcast-rs")]
 use downcast_rs::{DowncastSync, impl_downcast};
+#[cfg(not(any(feature = "downcast-rs", feature = "downcast")))]
+use std::any::Any;
+use std::collections::HashSet;
 
 #[cfg(feature = "downcast")]
 use downcast::{AnySync, downcast_sync};
@@ -43,11 +44,11 @@ impl<S> PluginManifest<S> for SimplePluginManifest<S> {
 
 macro_rules! decl_plugin_trait {
     ($($traits:ident),+) => {
-        pub trait Plugin<C>: $($traits+)+ {
-            fn load(&mut self, _: &mut C) {}
-            fn unload(&mut self, _: &mut C) {}
-            fn enable(&mut self, _: &mut C) {}
-            fn disable(&mut self, _: &mut C) {}
+        pub trait Plugin<S, C>: $($traits+)+ {
+            fn load(&mut self, _context: &mut C, _hooks: &mut HookRegistry<S>) {}
+            fn unload(&mut self, _context: &mut C) {}
+            fn enable(&mut self, _context: &mut C) {}
+            fn disable(&mut self, _context: &mut C) {}
         }
     };
 }
@@ -59,22 +60,22 @@ decl_plugin_trait!(Any, Send, Sync);
 decl_plugin_trait!(DowncastSync);
 
 #[cfg(feature = "downcast-rs")]
-impl_downcast!(sync Plugin<C>);
+impl_downcast!(sync Plugin<S, C>);
 
 #[cfg(feature = "downcast")]
 decl_plugin_trait!(AnySync);
 
 #[cfg(feature = "downcast")]
-downcast_sync!(<C> dyn Plugin<C>);
+downcast_sync!(<S, C> dyn Plugin<S, C>);
 
-struct PluginState<M, C> {
+struct PluginState<S, M, C> {
     manifest: M,
-    plugin: Box<dyn Plugin<C>>,
+    plugin: Box<dyn Plugin<S, C>>,
     enabled: bool,
 }
 
-impl<M, C> PluginState<M, C> {
-    pub fn new(manifest: M, plugin: Box<dyn Plugin<C>>) -> Self {
+impl<S, M, C> PluginState<S, M, C> {
+    pub fn new(manifest: M, plugin: Box<dyn Plugin<S, C>>) -> Self {
         Self {
             manifest,
             plugin,
@@ -83,7 +84,7 @@ impl<M, C> PluginState<M, C> {
     }
 }
 
-impl<M, C> std::fmt::Debug for PluginState<M, C>
+impl<S, M, C> Debug for PluginState<S, M, C>
 where
     M: Debug,
 {
@@ -97,21 +98,32 @@ where
 
 #[derive(Debug, Default)]
 pub struct PluginRegistry<S = String, M = SimplePluginManifest<S>, C = ()> {
-    plugins: HashMap<S, PluginState<M, C>>,
+    plugins: HashMap<S, PluginState<S, M, C>>,
+    hooks: HookRegistry<S>,
 }
 
 impl<S, M, C> PluginRegistry<S, M, C>
 where
     M: PluginManifest<S>,
+    S: Eq + Hash,
 {
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
+            hooks: HookRegistry::new(),
         }
     }
 
     pub fn plugin_count(&self) -> usize {
         self.plugins.len()
+    }
+
+    pub fn hooks(&self) -> &HookRegistry<S> {
+        &self.hooks
+    }
+
+    pub fn hooks_mut(&mut self) -> &mut HookRegistry<S> {
+        &mut self.hooks
     }
 }
 
@@ -153,7 +165,13 @@ where
         self.plugins.get(id).map(|s| s.enabled)
     }
 
-    pub fn get_plugin<Q>(&self, id: &Q) -> Option<&dyn Plugin<C>>
+    pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = &S> {
+        self.plugins
+            .iter()
+            .filter_map(|(id, plugin)| plugin.enabled.then_some(id))
+    }
+
+    pub fn get_plugin<Q>(&self, id: &Q) -> Option<&dyn Plugin<S, C>>
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
@@ -161,24 +179,55 @@ where
         self.plugins.get(id).map(|s| s.plugin.as_ref())
     }
 
-    pub fn get_plugin_mut<Q>(&mut self, id: &Q) -> Option<&mut dyn Plugin<C>>
+    pub fn get_plugin_mut<Q>(&mut self, id: &Q) -> Option<&mut dyn Plugin<S, C>>
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.plugins.get_mut(id).map(|s| s.plugin.as_mut())
     }
+
+    pub fn enabled_hooks<Slot>(&self) -> impl FusedIterator<Item = &Slot::HookTraitObject>
+    where
+        Slot: HookSlot<S>,
+    {
+        let enabled: HashSet<_> = self
+            .plugins
+            .iter()
+            .filter_map(|(id, plugin)| plugin.enabled.then_some(id))
+            .collect();
+        self.hooks
+            .slot_hooks_and_plugin::<Slot>()
+            .filter_map(move |(plugin, hook)| enabled.contains(plugin).then_some(hook))
+    }
+
+    pub fn enabled_hooks_mut<Slot>(
+        &mut self,
+    ) -> impl FusedIterator<Item = &mut Slot::HookTraitObject>
+    where
+        S: Clone,
+        Slot: HookSlot<S>,
+    {
+        let enabled: HashSet<_> = self
+            .plugins
+            .iter()
+            .filter_map(|(id, plugin)| plugin.enabled.then_some(id))
+            .collect();
+        self.hooks
+            .slot_hooks_and_plugin_mut::<Slot>()
+            .filter_map(move |(plugin, hook)| enabled.contains(plugin).then_some(hook))
+    }
 }
 
 impl<S, M, C> PluginRegistry<S, M, C>
 where
     M: PluginManifest<S>,
-    S: Eq + Hash + Clone,
+    S: Eq + Hash + Clone + 'static,
     C: 'static,
 {
     pub fn load_plugin<Q>(&mut self, manifest: M, plugin: Q, context: &mut C) -> bool
     where
-        Q: Into<Box<dyn Plugin<C>>>,
+        Q: Into<Box<dyn Plugin<S, C>>>,
     {
         let id = manifest.id().clone();
         if !self.plugins.contains_key(&id) {
@@ -188,7 +237,7 @@ where
                 .into_mut()
                 .plugin
                 .as_mut()
-                .load(context);
+                .load(context, &mut self.hooks);
 
             true
         } else {
@@ -199,7 +248,7 @@ where
 
 impl<S, M, C> PluginRegistry<S, M, C>
 where
-    S: Eq + Hash,
+    S: Eq + Hash + 'static,
     C: 'static,
 {
     pub fn unload_plugin<Q>(&mut self, id: &Q, context: &mut C) -> bool
@@ -257,11 +306,9 @@ where
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<C>,
+        T: Plugin<S, C>,
     {
-        self.plugins
-            .get(id)
-            .and_then(|s| s.plugin.as_ref().downcast_ref())
+        self.plugins.get(id)?.plugin.as_ref().downcast_ref()
     }
 
     #[cfg(feature = "downcast-rs")]
@@ -269,11 +316,9 @@ where
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<C>,
+        T: Plugin<S, C>,
     {
-        self.plugins
-            .get_mut(id)
-            .and_then(|s| s.plugin.as_mut().downcast_mut())
+        self.plugins.get_mut(id)?.plugin.as_mut().downcast_mut()
     }
 
     #[cfg(feature = "downcast")]
@@ -281,11 +326,9 @@ where
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<C>,
+        T: Plugin<S, C>,
     {
-        self.plugins
-            .get(id)
-            .and_then(|s| s.plugin.as_ref().downcast_ref().ok())
+        self.plugins.get(id)?.plugin.as_ref().downcast_ref().ok()
     }
 
     #[cfg(feature = "downcast")]
@@ -293,17 +336,20 @@ where
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<C>,
+        T: Plugin<S, C>,
     {
         self.plugins
-            .get_mut(id)
-            .and_then(|s| s.plugin.as_mut().downcast_mut().ok())
+            .get_mut(id)?
+            .plugin
+            .as_mut()
+            .downcast_mut()
+            .ok()
     }
 }
 
 #[derive(Debug)]
 pub struct PluginIdIter<'a, S, M, C> {
-    iter: hash_map::Keys<'a, S, PluginState<M, C>>,
+    iter: hash_map::Keys<'a, S, PluginState<S, M, C>>,
 }
 
 impl<'a, S, M, C> Iterator for PluginIdIter<'a, S, M, C>

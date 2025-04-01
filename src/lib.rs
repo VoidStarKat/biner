@@ -4,4 +4,5 @@ compile_error!(
  cannot both be enabled at the same time"
 );
 
+pub mod hook;
 pub mod plugin;
