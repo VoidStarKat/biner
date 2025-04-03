@@ -1,4 +1,4 @@
-use crate::hook::{HookRegistry, HookSlot};
+use crate::HookRegistry;
 use std::{
     borrow::Borrow,
     collections::{HashMap, hash_map},
@@ -6,15 +6,35 @@ use std::{
     hash::Hash,
     iter::FusedIterator,
 };
+use thiserror::Error;
 
-#[cfg(feature = "downcast-rs")]
-use downcast_rs::{DowncastSync, impl_downcast};
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum LoadPluginError {
+    #[error("plugin not found")]
+    NotFound,
+    #[error("plugin is already loaded")]
+    AlreadyLoaded,
+    #[error("plugin was not registered with a constructor")]
+    MissingConstructor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum EnablePluginError {
+    #[error("plugin not found")]
+    NotFound,
+    #[error("plugin is not loaded")]
+    NotLoaded,
+    #[error("plugin is already enabled")]
+    AlreadyEnabled,
+}
+
 #[cfg(not(any(feature = "downcast-rs", feature = "downcast")))]
 use std::any::Any;
-use std::collections::HashSet;
 
 #[cfg(feature = "downcast")]
 use downcast::{AnySync, downcast_sync};
+#[cfg(feature = "downcast-rs")]
+use downcast_rs::{DowncastSync, impl_downcast};
 
 pub trait PluginManifest<S> {
     fn id(&self) -> &S;
@@ -44,7 +64,7 @@ impl<S> PluginManifest<S> for SimplePluginManifest<S> {
 
 macro_rules! decl_plugin_trait {
     ($($traits:ident),+) => {
-        pub trait Plugin<S, C>: $($traits+)+ {
+        pub trait Plugin<S = String, C = ()>: $($traits+)+ {
             fn load(&mut self, _context: &mut C, _hooks: &mut HookRegistry<S>) {}
             fn unload(&mut self, _context: &mut C) {}
             fn enable(&mut self, _context: &mut C) {}
@@ -70,16 +90,24 @@ downcast_sync!(<S, C> dyn Plugin<S, C>);
 
 struct PluginState<S, M, C> {
     manifest: M,
-    plugin: Box<dyn Plugin<S, C>>,
     enabled: bool,
+    #[allow(clippy::type_complexity)]
+    ctor: Option<fn() -> Box<dyn Plugin<S, C>>>,
+    plugin: Option<Box<dyn Plugin<S, C>>>,
 }
 
 impl<S, M, C> PluginState<S, M, C> {
-    pub fn new(manifest: M, plugin: Box<dyn Plugin<S, C>>) -> Self {
+    #[allow(clippy::type_complexity)]
+    fn new(
+        manifest: M,
+        ctor: Option<fn() -> Box<dyn Plugin<S, C>>>,
+        plugin: Option<Box<dyn Plugin<S, C>>>,
+    ) -> Self {
         Self {
             manifest,
-            plugin,
             enabled: false,
+            ctor,
+            plugin,
         }
     }
 }
@@ -114,36 +142,40 @@ where
         }
     }
 
-    pub fn plugin_count(&self) -> usize {
-        self.plugins.len()
-    }
-
-    pub fn hooks(&self) -> &HookRegistry<S> {
-        &self.hooks
-    }
-
-    pub fn hooks_mut(&mut self) -> &mut HookRegistry<S> {
-        &mut self.hooks
-    }
-}
-
-impl<S, M, C> PluginRegistry<S, M, C>
-where
-    M: PluginManifest<S>,
-    S: AsRef<str>,
-{
-    pub fn plugin_ids(&self) -> PluginIdIter<S, M, C> {
-        PluginIdIter {
-            iter: self.plugins.keys(),
+    pub fn from_initializers(callbacks: impl IntoIterator<Item = fn(&mut Self)>) -> Self {
+        let mut this = Self::new();
+        for f in callbacks {
+            f(&mut this);
         }
+        this
     }
-}
 
-impl<S, M, C> PluginRegistry<S, M, C>
-where
-    M: PluginManifest<S>,
-    S: Eq + Hash,
-{
+    pub fn exists<Q>(&self, id: &Q) -> bool
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+    {
+        self.plugins.contains_key(id)
+    }
+
+    pub fn is_loaded<Q>(&self, id: &Q) -> bool
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+    {
+        self.plugins
+            .get(id)
+            .is_some_and(|state| state.plugin.is_some())
+    }
+
+    pub fn is_enabled<Q>(&self, id: &Q) -> bool
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+    {
+        self.plugins.get(id).is_some_and(|state| state.enabled)
+    }
+
     pub fn get_manifest<Q>(&self, id: &Q) -> Option<&M>
     where
         S: Borrow<Q>,
@@ -153,92 +185,54 @@ where
     }
 }
 
-impl<S, M, C> PluginRegistry<S, M, C>
-where
-    S: Eq + Hash,
-{
-    pub fn is_enabled<Q>(&self, id: &Q) -> Option<bool>
-    where
-        S: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        self.plugins.get(id).map(|s| s.enabled)
+impl<S, M, C> PluginRegistry<S, M, C> {
+    pub fn hooks(&self) -> &HookRegistry<S> {
+        &self.hooks
+    }
+
+    pub fn hooks_mut(&mut self) -> &mut HookRegistry<S> {
+        &mut self.hooks
+    }
+
+    pub fn plugin_count(&self) -> usize {
+        self.plugins.len()
+    }
+
+    pub fn loaded_plugin_count(&self) -> usize {
+        self.plugins.values().filter(|p| p.plugin.is_some()).count()
+    }
+
+    pub fn enabled_plugin_count(&self) -> usize {
+        self.plugins.values().filter(|p| p.enabled).count()
+    }
+
+    pub fn plugin_ids(&self) -> impl FusedIterator<Item = &S> {
+        self.plugins.keys()
+    }
+
+    pub fn loaded_plugin_ids(&self) -> impl FusedIterator<Item = &S> {
+        self.plugins
+            .iter()
+            .filter_map(|(k, p)| p.plugin.is_some().then_some(k))
     }
 
     pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = &S> {
         self.plugins
             .iter()
-            .filter_map(|(id, plugin)| plugin.enabled.then_some(id))
-    }
-
-    pub fn get_plugin<Q>(&self, id: &Q) -> Option<&dyn Plugin<S, C>>
-    where
-        S: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        self.plugins.get(id).map(|s| s.plugin.as_ref())
-    }
-
-    pub fn get_plugin_mut<Q>(&mut self, id: &Q) -> Option<&mut dyn Plugin<S, C>>
-    where
-        S: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        self.plugins.get_mut(id).map(|s| s.plugin.as_mut())
-    }
-
-    pub fn enabled_hooks<Slot>(&self) -> impl FusedIterator<Item = &Slot::HookTraitObject>
-    where
-        Slot: HookSlot<S>,
-    {
-        let enabled: HashSet<_> = self
-            .plugins
-            .iter()
-            .filter_map(|(id, plugin)| plugin.enabled.then_some(id))
-            .collect();
-        self.hooks
-            .slot_hooks_and_plugin::<Slot>()
-            .filter_map(move |(plugin, hook)| enabled.contains(plugin).then_some(hook))
-    }
-
-    pub fn enabled_hooks_mut<Slot>(
-        &mut self,
-    ) -> impl FusedIterator<Item = &mut Slot::HookTraitObject>
-    where
-        S: Clone,
-        Slot: HookSlot<S>,
-    {
-        let enabled: HashSet<_> = self
-            .plugins
-            .iter()
-            .filter_map(|(id, plugin)| plugin.enabled.then_some(id))
-            .collect();
-        self.hooks
-            .slot_hooks_and_plugin_mut::<Slot>()
-            .filter_map(move |(plugin, hook)| enabled.contains(plugin).then_some(hook))
+            .filter_map(|(k, p)| p.enabled.then_some(k))
     }
 }
 
 impl<S, M, C> PluginRegistry<S, M, C>
 where
     M: PluginManifest<S>,
-    S: Eq + Hash + Clone + 'static,
-    C: 'static,
+    S: Eq + Hash + Clone,
 {
-    pub fn load_plugin<Q>(&mut self, manifest: M, plugin: Q, context: &mut C) -> bool
-    where
-        Q: Into<Box<dyn Plugin<S, C>>>,
-    {
+    #[allow(clippy::type_complexity)]
+    pub fn register(&mut self, manifest: M, ctor: Option<fn() -> Box<dyn Plugin<S, C>>>) -> bool {
         let id = manifest.id().clone();
-        if !self.plugins.contains_key(&id) {
-            self.plugins
-                .entry(id)
-                .insert_entry(PluginState::new(manifest, plugin.into()))
-                .into_mut()
-                .plugin
-                .as_mut()
-                .load(context, &mut self.hooks);
-
+        if let hash_map::Entry::Vacant(e) = self.plugins.entry(id) {
+            e.insert(PluginState::new(manifest, ctor, None));
             true
         } else {
             false
@@ -251,13 +245,21 @@ where
     S: Eq + Hash + 'static,
     C: 'static,
 {
-    pub fn unload_plugin<Q>(&mut self, id: &Q, context: &mut C) -> bool
+    pub fn remove<Q>(&mut self, id: &Q, context: &mut C) -> bool
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
-            state.plugin.unload(context);
+            if state.plugin.is_some() {
+                let plugin = state.plugin.as_mut().unwrap();
+                if state.enabled {
+                    plugin.disable(context);
+                    state.enabled = false;
+                }
+                plugin.unload(context);
+                self.hooks.remove_plugin_hooks(id);
+            }
             self.plugins.remove(id);
             true
         } else {
@@ -265,15 +267,60 @@ where
         }
     }
 
-    pub fn enable_plugin<Q>(&mut self, id: &Q, context: &mut C) -> bool
+    pub fn load<P, Q>(&mut self, id: &Q, context: &mut C) -> Result<(), LoadPluginError>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+    {
+        let state = self.plugins.get_mut(id).ok_or(LoadPluginError::NotFound)?;
+        if state.plugin.is_some() {
+            Err(LoadPluginError::AlreadyLoaded)
+        } else {
+            state
+                .plugin
+                .insert(state.ctor.ok_or(LoadPluginError::MissingConstructor)?())
+                .load(context, &mut self.hooks);
+            Ok(())
+        }
+    }
+
+    pub fn load_with<P, Q>(
+        &mut self,
+        id: &Q,
+        plugin: P,
+        context: &mut C,
+    ) -> Result<(), LoadPluginError>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        P: Into<Box<dyn Plugin<S, C>>>,
+    {
+        let state = self.plugins.get_mut(id).ok_or(LoadPluginError::NotFound)?;
+        if state.plugin.is_some() {
+            Err(LoadPluginError::AlreadyLoaded)
+        } else {
+            state
+                .plugin
+                .insert(plugin.into())
+                .load(context, &mut self.hooks);
+            Ok(())
+        }
+    }
+
+    pub fn unload<Q>(&mut self, id: &Q, context: &mut C) -> bool
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
-            if !state.enabled {
-                state.plugin.enable(context);
-                state.enabled = true;
+            if state.plugin.is_some() {
+                let plugin = state.plugin.as_mut().unwrap();
+                if state.enabled {
+                    plugin.disable(context);
+                    state.enabled = false;
+                }
+                plugin.unload(context);
+                self.hooks.remove_plugin_hooks(id);
                 true
             } else {
                 false
@@ -283,56 +330,104 @@ where
         }
     }
 
-    pub fn disable_plugin<Q>(&mut self, id: &Q, context: &mut C) -> bool
+    pub fn enable<Q>(&mut self, id: &Q, context: &mut C) -> Result<(), EnablePluginError>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+    {
+        let state = self
+            .plugins
+            .get_mut(id)
+            .ok_or(EnablePluginError::NotFound)?;
+        if state.plugin.is_none() {
+            Err(EnablePluginError::NotLoaded)
+        } else if state.enabled {
+            Err(EnablePluginError::AlreadyEnabled)
+        } else {
+            state.plugin.as_mut().unwrap().enable(context);
+            state.enabled = true;
+            Ok(())
+        }
+    }
+
+    pub fn disable<Q>(&mut self, id: &Q, context: &mut C) -> bool
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
             if state.enabled {
+                state.plugin.as_mut().unwrap().disable(context);
                 state.enabled = false;
-                state.plugin.disable(context);
-                true
-            } else {
-                false
             }
+            true
         } else {
             false
         }
     }
 
     #[cfg(feature = "downcast-rs")]
-    pub fn get<T, Q>(&self, id: &Q) -> Option<&T>
+    pub fn get_loaded<T, Q>(&self, id: &Q) -> Option<&T>
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
         T: Plugin<S, C>,
     {
-        self.plugins.get(id)?.plugin.as_ref().downcast_ref()
+        self.plugins.get(id)?.plugin.as_ref()?.downcast_ref()
     }
 
     #[cfg(feature = "downcast-rs")]
-    pub fn get_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
+    pub fn get_loaded_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
         T: Plugin<S, C>,
     {
-        self.plugins.get_mut(id)?.plugin.as_mut().downcast_mut()
+        self.plugins.get_mut(id)?.plugin.as_mut()?.downcast_mut()
     }
 
-    #[cfg(feature = "downcast")]
-    pub fn get<T, Q>(&self, id: &Q) -> Option<&T>
+    #[cfg(feature = "downcast-rs")]
+    pub fn get_enabled<T, Q>(&self, id: &Q) -> Option<&T>
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
         T: Plugin<S, C>,
     {
-        self.plugins.get(id)?.plugin.as_ref().downcast_ref().ok()
+        let state = self.plugins.get(id)?;
+        if state.enabled {
+            state.plugin.as_ref()?.downcast_ref()
+        } else {
+            None
+        }
+    }
+
+    #[cfg(feature = "downcast-rs")]
+    pub fn get_enabled_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        T: Plugin<S, C>,
+    {
+        let state = self.plugins.get_mut(id)?;
+        if state.enabled {
+            state.plugin.as_mut()?.downcast_mut()
+        } else {
+            None
+        }
     }
 
     #[cfg(feature = "downcast")]
-    pub fn get_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
+    pub fn get_loaded<T, Q>(&self, id: &Q) -> Option<&T>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        T: Plugin<S, C>,
+    {
+        self.plugins.get(id)?.plugin.as_ref()?.downcast_ref().ok()
+    }
+
+    #[cfg(feature = "downcast")]
+    pub fn get_loaded_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
     where
         S: Borrow<Q>,
         Q: Eq + Hash,
@@ -341,39 +436,38 @@ where
         self.plugins
             .get_mut(id)?
             .plugin
-            .as_mut()
+            .as_mut()?
             .downcast_mut()
             .ok()
     }
-}
 
-#[derive(Debug)]
-pub struct PluginIdIter<'a, S, M, C> {
-    iter: hash_map::Keys<'a, S, PluginState<S, M, C>>,
-}
-
-impl<'a, S, M, C> Iterator for PluginIdIter<'a, S, M, C>
-where
-    S: AsRef<str>,
-{
-    type Item = &'a str;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|id| id.as_ref())
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-
-    fn count(self) -> usize
+    #[cfg(feature = "downcast")]
+    pub fn get_enabled<T, Q>(&self, id: &Q) -> Option<&T>
     where
-        Self: Sized,
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        T: Plugin<S, C>,
     {
-        self.iter.count()
+        let state = self.plugins.get(id)?;
+        if state.enabled {
+            state.plugin.as_ref()?.downcast_ref().ok()
+        } else {
+            None
+        }
+    }
+
+    #[cfg(feature = "downcast")]
+    pub fn get_enabled_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
+    where
+        S: Borrow<Q>,
+        Q: Eq + Hash,
+        T: Plugin<S, C>,
+    {
+        let state = self.plugins.get_mut(id)?;
+        if state.enabled {
+            state.plugin.as_mut()?.downcast_mut().ok()
+        } else {
+            None
+        }
     }
 }
-
-impl<S, M, C> FusedIterator for PluginIdIter<'_, S, M, C> where S: AsRef<str> {}
-
-impl<S, M, C> ExactSizeIterator for PluginIdIter<'_, S, M, C> where S: AsRef<str> {}
