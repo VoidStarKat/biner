@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::iter::FusedIterator;
 
 pub trait HookSlot<Id = String>: 'static {
-    type HookTraitObject: ?Sized + Any + Send + Sync;
+    type TraitObject: ?Sized + Any + Send + Sync;
 
     fn id() -> Id;
 }
@@ -142,7 +142,7 @@ where
             .find(|h| h.name.as_ref().map(Borrow::borrow) == name)
     }
 
-    pub fn get_first<Slot, Q>(&self, plugin: &Q) -> Option<&Slot::HookTraitObject>
+    pub fn get_first<Slot, Q>(&self, plugin: &Q) -> Option<&Slot::TraitObject>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -152,12 +152,12 @@ where
         Some(
             self.get_first_hook(plugin, slot.borrow())?
                 .ptr
-                .downcast_ref::<Box<Slot::HookTraitObject>>()?
+                .downcast_ref::<Box<Slot::TraitObject>>()?
                 .as_ref(),
         )
     }
 
-    pub fn get_exact<Slot, Q>(&self, plugin: &Q, name: Option<&Q>) -> Option<&Slot::HookTraitObject>
+    pub fn get_exact<Slot, Q>(&self, plugin: &Q, name: Option<&Q>) -> Option<&Slot::TraitObject>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -167,12 +167,12 @@ where
         Some(
             self.get_exact_hook(plugin, slot.borrow(), name)?
                 .ptr
-                .downcast_ref::<Box<Slot::HookTraitObject>>()?
+                .downcast_ref::<Box<Slot::TraitObject>>()?
                 .as_ref(),
         )
     }
 
-    pub fn get_first_mut<Slot, Q>(&mut self, plugin: &Q) -> Option<&mut Slot::HookTraitObject>
+    pub fn get_first_mut<Slot, Q>(&mut self, plugin: &Q) -> Option<&mut Slot::TraitObject>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -182,7 +182,7 @@ where
         Some(
             self.get_first_hook_mut(plugin, slot.borrow())?
                 .ptr
-                .downcast_mut::<Box<Slot::HookTraitObject>>()?
+                .downcast_mut::<Box<Slot::TraitObject>>()?
                 .as_mut(),
         )
     }
@@ -191,7 +191,7 @@ where
         &mut self,
         plugin: &Q,
         name: Option<&Q>,
-    ) -> Option<&mut Slot::HookTraitObject>
+    ) -> Option<&mut Slot::TraitObject>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -201,7 +201,7 @@ where
         Some(
             self.get_exact_hook_mut(plugin, slot.borrow(), name)?
                 .ptr
-                .downcast_mut::<Box<Slot::HookTraitObject>>()?
+                .downcast_mut::<Box<Slot::TraitObject>>()?
                 .as_mut(),
         )
     }
@@ -210,7 +210,7 @@ where
         &mut self,
         plugin: &Q,
         name: Option<&Q>,
-    ) -> Option<Box<Slot::HookTraitObject>>
+    ) -> Option<Box<Slot::TraitObject>>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -226,7 +226,7 @@ where
             *hooks
                 .swap_remove(idx)
                 .ptr
-                .downcast::<Box<Slot::HookTraitObject>>()
+                .downcast::<Box<Slot::TraitObject>>()
                 .ok()?,
         )
     }
@@ -264,7 +264,7 @@ where
     pub fn plugin_slot_hooks<Slot, Q>(
         &self,
         plugin: &Q,
-    ) -> impl FusedIterator<Item = &Slot::HookTraitObject>
+    ) -> impl FusedIterator<Item = &Slot::TraitObject>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -277,7 +277,7 @@ where
             .flatten()
             .filter_map(|h| {
                 h.ptr
-                    .downcast_ref::<Box<Slot::HookTraitObject>>()
+                    .downcast_ref::<Box<Slot::TraitObject>>()
                     .map(|b| b.as_ref())
             })
     }
@@ -285,7 +285,7 @@ where
     pub fn plugin_slot_hooks_mut<Slot, Q>(
         &mut self,
         plugin: &Q,
-    ) -> impl FusedIterator<Item = &mut Slot::HookTraitObject>
+    ) -> impl FusedIterator<Item = &mut Slot::TraitObject>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -298,14 +298,14 @@ where
             .flatten()
             .filter_map(|h| {
                 h.ptr
-                    .downcast_mut::<Box<Slot::HookTraitObject>>()
+                    .downcast_mut::<Box<Slot::TraitObject>>()
                     .map(|b| b.as_mut())
             })
     }
 
     pub fn slot_hooks_and_plugin<Slot>(
         &self,
-    ) -> impl FusedIterator<Item = (&Id, &Slot::HookTraitObject)>
+    ) -> impl FusedIterator<Item = (&Id, &Slot::TraitObject)>
     where
         Slot: HookSlot<Id>,
     {
@@ -315,14 +315,14 @@ where
             .flatten()
             .flat_map(|m| {
                 m.1.iter()
-                    .filter_map(|h| h.ptr.downcast_ref::<Box<Slot::HookTraitObject>>())
+                    .filter_map(|h| h.ptr.downcast_ref::<Box<Slot::TraitObject>>())
                     .map(move |b| (m.0, b.as_ref()))
             })
     }
 
     pub fn slot_hooks_and_plugin_mut<Slot>(
         &mut self,
-    ) -> impl FusedIterator<Item = (&Id, &mut Slot::HookTraitObject)>
+    ) -> impl FusedIterator<Item = (&Id, &mut Slot::TraitObject)>
     where
         Slot: HookSlot<Id>,
     {
@@ -332,7 +332,7 @@ where
             .flatten()
             .flat_map(|m| {
                 m.1.iter_mut()
-                    .filter_map(|h| h.ptr.downcast_mut::<Box<Slot::HookTraitObject>>())
+                    .filter_map(|h| h.ptr.downcast_mut::<Box<Slot::TraitObject>>())
                     .map(move |b| (m.0, b.as_mut()))
             })
     }
@@ -344,10 +344,10 @@ where
 {
     pub fn register<Slot>(
         &mut self,
-        hook: Box<Slot::HookTraitObject>,
+        hook: Box<Slot::TraitObject>,
         plugin: Id,
         name: Option<Id>,
-    ) -> Result<(), Box<Slot::HookTraitObject>>
+    ) -> Result<(), Box<Slot::TraitObject>>
     where
         Slot: HookSlot<Id>,
     {
