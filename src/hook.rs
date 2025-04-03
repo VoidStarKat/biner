@@ -69,7 +69,7 @@ where
 }
 
 #[derive(Debug, Default)]
-pub struct HookRegistry<Id = String> {
+pub struct HookRegistry<Id = &'static str> {
     slot_hooks: HashMap<TypeId, HashMap<Id, Vec<Hook<Id>>>>,
 }
 

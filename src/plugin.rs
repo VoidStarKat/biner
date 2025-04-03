@@ -34,18 +34,18 @@ pub trait PluginManifest<Id> {
 }
 
 #[derive(Debug, Default)]
-pub struct SimplePluginManifest<Id = String> {
+pub struct SimplePluginManifest<Id = &'static str> {
     id: Id,
-    description: String,
+    description: &'static str,
 }
 
 impl<Id> SimplePluginManifest<Id> {
-    pub fn new(id: Id, description: String) -> Self {
+    pub fn new(id: Id, description: &'static str) -> Self {
         Self { id, description }
     }
 
     pub fn description(&self) -> &str {
-        &self.description
+        self.description
     }
 }
 
@@ -55,7 +55,7 @@ impl<Id> PluginManifest<Id> for SimplePluginManifest<Id> {
     }
 }
 
-pub trait Plugin<Id = String, Context = ()>: Any + Send + Sync {
+pub trait Plugin<Id = &'static str, Context = ()>: Any + Send + Sync {
     fn load(&mut self, _context: &mut Context, _hooks: &mut HookRegistry<Id>) {}
     fn unload(&mut self, _context: &mut Context) {}
     fn enable(&mut self, _context: &mut Context) {}
@@ -109,7 +109,7 @@ where
 }
 
 #[derive(Debug, Default)]
-pub struct PluginRegistry<Id = String, Manifest = SimplePluginManifest<Id>, Context = ()> {
+pub struct PluginRegistry<Id = &'static str, Manifest = SimplePluginManifest<Id>, Context = ()> {
     plugins: HashMap<Id, PluginState<Id, Manifest, Context>>,
     hooks: HookRegistry<Id>,
 }
