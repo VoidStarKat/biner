@@ -95,7 +95,7 @@ where
 }
 
 pub trait Plugin<Id = &'static str, Context = ()>: Any + Send + Sync {
-    fn load(&mut self, _context: &mut Context, _hooks: &mut HookRegistry<Id>) {}
+    fn load(&mut self, _hooks: &mut HookRegistry<Id>, _context: &mut Context) {}
     fn unload(&mut self, _context: &mut Context) {}
     fn enable(&mut self, _context: &mut Context) {}
     fn disable(&mut self, _context: &mut Context) {}
@@ -322,7 +322,7 @@ where
             state
                 .plugin
                 .insert(state.ctor.ok_or(LoadPluginError::MissingConstructor)?())
-                .load(context, &mut self.hooks);
+                .load(&mut self.hooks, context);
             Ok(())
         }
     }
@@ -345,7 +345,7 @@ where
             state
                 .plugin
                 .insert(plugin.into())
-                .load(context, &mut self.hooks);
+                .load(&mut self.hooks, context);
             Ok(())
         }
     }
