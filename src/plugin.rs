@@ -1,5 +1,6 @@
 use crate::HookRegistry;
 use std::{
+    any::Any,
     borrow::Borrow,
     collections::{HashMap, hash_map},
     fmt::Debug,
@@ -28,26 +29,18 @@ pub enum EnablePluginError {
     AlreadyEnabled,
 }
 
-#[cfg(not(any(feature = "downcast-rs", feature = "downcast")))]
-use std::any::Any;
-
-#[cfg(feature = "downcast")]
-use downcast::{AnySync, downcast_sync};
-#[cfg(feature = "downcast-rs")]
-use downcast_rs::{DowncastSync, impl_downcast};
-
-pub trait PluginManifest<S> {
-    fn id(&self) -> &S;
+pub trait PluginManifest<Id> {
+    fn id(&self) -> &Id;
 }
 
 #[derive(Debug, Default)]
-pub struct SimplePluginManifest<S = String> {
-    id: S,
+pub struct SimplePluginManifest<Id = String> {
+    id: Id,
     description: String,
 }
 
-impl<S> SimplePluginManifest<S> {
-    pub fn new(id: S, description: String) -> Self {
+impl<Id> SimplePluginManifest<Id> {
+    pub fn new(id: Id, description: String) -> Self {
         Self { id, description }
     }
 
@@ -56,52 +49,43 @@ impl<S> SimplePluginManifest<S> {
     }
 }
 
-impl<S> PluginManifest<S> for SimplePluginManifest<S> {
-    fn id(&self) -> &S {
+impl<Id> PluginManifest<Id> for SimplePluginManifest<Id> {
+    fn id(&self) -> &Id {
         &self.id
     }
 }
 
-macro_rules! decl_plugin_trait {
-    ($($traits:ident),+) => {
-        pub trait Plugin<S = String, C = ()>: $($traits+)+ {
-            fn load(&mut self, _context: &mut C, _hooks: &mut HookRegistry<S>) {}
-            fn unload(&mut self, _context: &mut C) {}
-            fn enable(&mut self, _context: &mut C) {}
-            fn disable(&mut self, _context: &mut C) {}
-        }
-    };
+pub trait Plugin<Id = String, Context = ()>: Any + Send + Sync {
+    fn load(&mut self, _context: &mut Context, _hooks: &mut HookRegistry<Id>) {}
+    fn unload(&mut self, _context: &mut Context) {}
+    fn enable(&mut self, _context: &mut Context) {}
+    fn disable(&mut self, _context: &mut Context) {}
 }
 
-#[cfg(not(any(feature = "downcast-rs", feature = "downcast")))]
-decl_plugin_trait!(Any, Send, Sync);
+impl<Id, Context> dyn Plugin<Id, Context> {
+    pub fn downcast_ref<T: Plugin<Id, Context>>(&self) -> Option<&T> {
+        (self as &dyn Any).downcast_ref()
+    }
 
-#[cfg(feature = "downcast-rs")]
-decl_plugin_trait!(DowncastSync);
+    pub fn downcast_mut<T: Plugin<Id, Context>>(&mut self) -> Option<&mut T> {
+        (self as &mut dyn Any).downcast_mut()
+    }
+}
 
-#[cfg(feature = "downcast-rs")]
-impl_downcast!(sync Plugin<S, C>);
-
-#[cfg(feature = "downcast")]
-decl_plugin_trait!(AnySync);
-
-#[cfg(feature = "downcast")]
-downcast_sync!(<S, C> dyn Plugin<S, C>);
-
-struct PluginState<S, M, C> {
-    manifest: M,
+struct PluginState<Id, Manifest, Context> {
+    manifest: Manifest,
     enabled: bool,
     #[allow(clippy::type_complexity)]
-    ctor: Option<fn() -> Box<dyn Plugin<S, C>>>,
-    plugin: Option<Box<dyn Plugin<S, C>>>,
+    ctor: Option<fn() -> Box<dyn Plugin<Id, Context>>>,
+    plugin: Option<Box<dyn Plugin<Id, Context>>>,
 }
 
-impl<S, M, C> PluginState<S, M, C> {
+impl<Id, Manifest, Context> PluginState<Id, Manifest, Context> {
     #[allow(clippy::type_complexity)]
     fn new(
-        manifest: M,
-        ctor: Option<fn() -> Box<dyn Plugin<S, C>>>,
-        plugin: Option<Box<dyn Plugin<S, C>>>,
+        manifest: Manifest,
+        ctor: Option<fn() -> Box<dyn Plugin<Id, Context>>>,
+        plugin: Option<Box<dyn Plugin<Id, Context>>>,
     ) -> Self {
         Self {
             manifest,
@@ -112,9 +96,9 @@ impl<S, M, C> PluginState<S, M, C> {
     }
 }
 
-impl<S, M, C> Debug for PluginState<S, M, C>
+impl<Id, Manifest, Context> Debug for PluginState<Id, Manifest, Context>
 where
-    M: Debug,
+    Manifest: Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginState")
@@ -125,15 +109,15 @@ where
 }
 
 #[derive(Debug, Default)]
-pub struct PluginRegistry<S = String, M = SimplePluginManifest<S>, C = ()> {
-    plugins: HashMap<S, PluginState<S, M, C>>,
-    hooks: HookRegistry<S>,
+pub struct PluginRegistry<Id = String, Manifest = SimplePluginManifest<Id>, Context = ()> {
+    plugins: HashMap<Id, PluginState<Id, Manifest, Context>>,
+    hooks: HookRegistry<Id>,
 }
 
-impl<S, M, C> PluginRegistry<S, M, C>
+impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context>
 where
-    M: PluginManifest<S>,
-    S: Eq + Hash,
+    Manifest: PluginManifest<Id>,
+    Id: Eq + Hash,
 {
     pub fn new() -> Self {
         Self {
@@ -152,7 +136,7 @@ where
 
     pub fn exists<Q>(&self, id: &Q) -> bool
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.plugins.contains_key(id)
@@ -160,7 +144,7 @@ where
 
     pub fn is_loaded<Q>(&self, id: &Q) -> bool
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.plugins
@@ -170,27 +154,27 @@ where
 
     pub fn is_enabled<Q>(&self, id: &Q) -> bool
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.plugins.get(id).is_some_and(|state| state.enabled)
     }
 
-    pub fn get_manifest<Q>(&self, id: &Q) -> Option<&M>
+    pub fn get_manifest<Q>(&self, id: &Q) -> Option<&Manifest>
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.plugins.get(id).map(|s| &s.manifest)
     }
 }
 
-impl<S, M, C> PluginRegistry<S, M, C> {
-    pub fn hooks(&self) -> &HookRegistry<S> {
+impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context> {
+    pub fn hooks(&self) -> &HookRegistry<Id> {
         &self.hooks
     }
 
-    pub fn hooks_mut(&mut self) -> &mut HookRegistry<S> {
+    pub fn hooks_mut(&mut self) -> &mut HookRegistry<Id> {
         &mut self.hooks
     }
 
@@ -206,30 +190,34 @@ impl<S, M, C> PluginRegistry<S, M, C> {
         self.plugins.values().filter(|p| p.enabled).count()
     }
 
-    pub fn plugin_ids(&self) -> impl FusedIterator<Item = &S> {
+    pub fn plugin_ids(&self) -> impl FusedIterator<Item = &Id> {
         self.plugins.keys()
     }
 
-    pub fn loaded_plugin_ids(&self) -> impl FusedIterator<Item = &S> {
+    pub fn loaded_plugin_ids(&self) -> impl FusedIterator<Item = &Id> {
         self.plugins
             .iter()
             .filter_map(|(k, p)| p.plugin.is_some().then_some(k))
     }
 
-    pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = &S> {
+    pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = &Id> {
         self.plugins
             .iter()
             .filter_map(|(k, p)| p.enabled.then_some(k))
     }
 }
 
-impl<S, M, C> PluginRegistry<S, M, C>
+impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context>
 where
-    M: PluginManifest<S>,
-    S: Eq + Hash + Clone,
+    Manifest: PluginManifest<Id>,
+    Id: Eq + Hash + Clone,
 {
     #[allow(clippy::type_complexity)]
-    pub fn register(&mut self, manifest: M, ctor: Option<fn() -> Box<dyn Plugin<S, C>>>) -> bool {
+    pub fn register(
+        &mut self,
+        manifest: Manifest,
+        ctor: Option<fn() -> Box<dyn Plugin<Id, Context>>>,
+    ) -> bool {
         let id = manifest.id().clone();
         if let hash_map::Entry::Vacant(e) = self.plugins.entry(id) {
             e.insert(PluginState::new(manifest, ctor, None));
@@ -240,14 +228,14 @@ where
     }
 }
 
-impl<S, M, C> PluginRegistry<S, M, C>
+impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context>
 where
-    S: Eq + Hash + 'static,
-    C: 'static,
+    Id: Eq + Hash + 'static,
+    Context: 'static,
 {
-    pub fn remove<Q>(&mut self, id: &Q, context: &mut C) -> bool
+    pub fn remove<Q>(&mut self, id: &Q, context: &mut Context) -> bool
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
@@ -267,9 +255,9 @@ where
         }
     }
 
-    pub fn load<P, Q>(&mut self, id: &Q, context: &mut C) -> Result<(), LoadPluginError>
+    pub fn load<Q>(&mut self, id: &Q, context: &mut Context) -> Result<(), LoadPluginError>
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         let state = self.plugins.get_mut(id).ok_or(LoadPluginError::NotFound)?;
@@ -288,12 +276,12 @@ where
         &mut self,
         id: &Q,
         plugin: P,
-        context: &mut C,
+        context: &mut Context,
     ) -> Result<(), LoadPluginError>
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
-        P: Into<Box<dyn Plugin<S, C>>>,
+        P: Into<Box<dyn Plugin<Id, Context>>>,
     {
         let state = self.plugins.get_mut(id).ok_or(LoadPluginError::NotFound)?;
         if state.plugin.is_some() {
@@ -307,9 +295,9 @@ where
         }
     }
 
-    pub fn unload<Q>(&mut self, id: &Q, context: &mut C) -> bool
+    pub fn unload<Q>(&mut self, id: &Q, context: &mut Context) -> bool
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
@@ -330,9 +318,9 @@ where
         }
     }
 
-    pub fn enable<Q>(&mut self, id: &Q, context: &mut C) -> Result<(), EnablePluginError>
+    pub fn enable<Q>(&mut self, id: &Q, context: &mut Context) -> Result<(), EnablePluginError>
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         let state = self
@@ -350,9 +338,9 @@ where
         }
     }
 
-    pub fn disable<Q>(&mut self, id: &Q, context: &mut C) -> bool
+    pub fn disable<Q>(&mut self, id: &Q, context: &mut Context) -> bool
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
@@ -366,32 +354,29 @@ where
         }
     }
 
-    #[cfg(feature = "downcast-rs")]
     pub fn get_loaded<T, Q>(&self, id: &Q) -> Option<&T>
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<S, C>,
+        T: Plugin<Id, Context>,
     {
         self.plugins.get(id)?.plugin.as_ref()?.downcast_ref()
     }
 
-    #[cfg(feature = "downcast-rs")]
     pub fn get_loaded_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<S, C>,
+        T: Plugin<Id, Context>,
     {
         self.plugins.get_mut(id)?.plugin.as_mut()?.downcast_mut()
     }
 
-    #[cfg(feature = "downcast-rs")]
     pub fn get_enabled<T, Q>(&self, id: &Q) -> Option<&T>
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<S, C>,
+        T: Plugin<Id, Context>,
     {
         let state = self.plugins.get(id)?;
         if state.enabled {
@@ -401,71 +386,15 @@ where
         }
     }
 
-    #[cfg(feature = "downcast-rs")]
     pub fn get_enabled_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
     where
-        S: Borrow<Q>,
+        Id: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<S, C>,
+        T: Plugin<Id, Context>,
     {
         let state = self.plugins.get_mut(id)?;
         if state.enabled {
             state.plugin.as_mut()?.downcast_mut()
-        } else {
-            None
-        }
-    }
-
-    #[cfg(feature = "downcast")]
-    pub fn get_loaded<T, Q>(&self, id: &Q) -> Option<&T>
-    where
-        S: Borrow<Q>,
-        Q: Eq + Hash,
-        T: Plugin<S, C>,
-    {
-        self.plugins.get(id)?.plugin.as_ref()?.downcast_ref().ok()
-    }
-
-    #[cfg(feature = "downcast")]
-    pub fn get_loaded_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
-    where
-        S: Borrow<Q>,
-        Q: Eq + Hash,
-        T: Plugin<S, C>,
-    {
-        self.plugins
-            .get_mut(id)?
-            .plugin
-            .as_mut()?
-            .downcast_mut()
-            .ok()
-    }
-
-    #[cfg(feature = "downcast")]
-    pub fn get_enabled<T, Q>(&self, id: &Q) -> Option<&T>
-    where
-        S: Borrow<Q>,
-        Q: Eq + Hash,
-        T: Plugin<S, C>,
-    {
-        let state = self.plugins.get(id)?;
-        if state.enabled {
-            state.plugin.as_ref()?.downcast_ref().ok()
-        } else {
-            None
-        }
-    }
-
-    #[cfg(feature = "downcast")]
-    pub fn get_enabled_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
-    where
-        S: Borrow<Q>,
-        Q: Eq + Hash,
-        T: Plugin<S, C>,
-    {
-        let state = self.plugins.get_mut(id)?;
-        if state.enabled {
-            state.plugin.as_mut()?.downcast_mut().ok()
         } else {
             None
         }

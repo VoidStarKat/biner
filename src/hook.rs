@@ -1,27 +1,29 @@
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::iter::FusedIterator;
 
-pub trait HookSlot<Id = String>: 'static {
+pub trait HookSlot: 'static {
     type TraitObject: ?Sized + Any + Send + Sync;
 
-    fn id() -> Id;
+    fn id() -> TypeId {
+        TypeId::of::<Self>()
+    }
 }
 
 type DynHook = dyn Any + Send + Sync;
 
 struct Hook<Id> {
     plugin: Id,
-    slot: Id,
+    slot: TypeId,
     name: Option<Id>,
     ptr: Box<DynHook>,
 }
 
 impl<Id> Hook<Id> {
-    fn new(plugin: Id, slot: Id, name: Option<Id>, ptr: Box<DynHook>) -> Self {
+    fn new(plugin: Id, slot: TypeId, name: Option<Id>, ptr: Box<DynHook>) -> Self {
         Self {
             plugin,
             slot,
@@ -68,20 +70,22 @@ where
 
 #[derive(Debug, Default)]
 pub struct HookRegistry<Id = String> {
-    slot_hooks: HashMap<Id, HashMap<Id, Vec<Hook<Id>>>>,
+    slot_hooks: HashMap<TypeId, HashMap<Id, Vec<Hook<Id>>>>,
+}
+
+impl<Id> HookRegistry<Id> {
+    pub(crate) fn new() -> Self {
+        Self {
+            slot_hooks: HashMap::new(),
+        }
+    }
 }
 
 impl<Id> HookRegistry<Id>
 where
     Id: Eq + Hash,
 {
-    pub(crate) fn new() -> Self {
-        Self {
-            slot_hooks: HashMap::new(),
-        }
-    }
-
-    pub fn exists<Q>(&self, plugin: &Q, slot: &Q) -> bool
+    pub fn exists<Q>(&self, plugin: &Q, slot: TypeId) -> bool
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -89,7 +93,7 @@ where
         self.get_first_hook(plugin, slot).is_some()
     }
 
-    pub fn exists_exact<Q>(&self, plugin: &Q, slot: &Q, name: Option<&Q>) -> bool
+    pub fn exists_exact<Q>(&self, plugin: &Q, slot: TypeId, name: Option<&Q>) -> bool
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
@@ -97,38 +101,38 @@ where
         self.get_exact_hook(plugin, slot, name).is_some()
     }
 
-    fn get_first_hook<Q>(&self, plugin: &Q, slot: &Q) -> Option<&Hook<Id>>
+    fn get_first_hook<Q>(&self, plugin: &Q, slot: TypeId) -> Option<&Hook<Id>>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
     {
-        self.slot_hooks.get(slot)?.get(plugin)?.first()
+        self.slot_hooks.get(&slot)?.get(plugin)?.first()
     }
 
-    fn get_exact_hook<Q>(&self, plugin: &Q, slot: &Q, name: Option<&Q>) -> Option<&Hook<Id>>
+    fn get_exact_hook<Q>(&self, plugin: &Q, slot: TypeId, name: Option<&Q>) -> Option<&Hook<Id>>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.slot_hooks
-            .get(slot)?
+            .get(&slot)?
             .get(plugin)?
             .iter()
             .find(|h| h.name.as_ref().map(Borrow::borrow) == name)
     }
 
-    fn get_first_hook_mut<Q>(&mut self, plugin: &Q, slot: &Q) -> Option<&mut Hook<Id>>
+    fn get_first_hook_mut<Q>(&mut self, plugin: &Q, slot: TypeId) -> Option<&mut Hook<Id>>
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
     {
-        self.slot_hooks.get_mut(slot)?.get_mut(plugin)?.first_mut()
+        self.slot_hooks.get_mut(&slot)?.get_mut(plugin)?.first_mut()
     }
 
     fn get_exact_hook_mut<Q>(
         &mut self,
         plugin: &Q,
-        slot: &Q,
+        slot: TypeId,
         name: Option<&Q>,
     ) -> Option<&mut Hook<Id>>
     where
@@ -136,7 +140,7 @@ where
         Q: Eq + Hash,
     {
         self.slot_hooks
-            .get_mut(slot)?
+            .get_mut(&slot)?
             .get_mut(plugin)?
             .iter_mut()
             .find(|h| h.name.as_ref().map(Borrow::borrow) == name)
@@ -146,11 +150,11 @@ where
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         let slot = Slot::id();
         Some(
-            self.get_first_hook(plugin, slot.borrow())?
+            self.get_first_hook(plugin, slot)?
                 .ptr
                 .downcast_ref::<Box<Slot::TraitObject>>()?
                 .as_ref(),
@@ -161,11 +165,11 @@ where
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         let slot = Slot::id();
         Some(
-            self.get_exact_hook(plugin, slot.borrow(), name)?
+            self.get_exact_hook(plugin, slot, name)?
                 .ptr
                 .downcast_ref::<Box<Slot::TraitObject>>()?
                 .as_ref(),
@@ -176,11 +180,11 @@ where
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         let slot = Slot::id();
         Some(
-            self.get_first_hook_mut(plugin, slot.borrow())?
+            self.get_first_hook_mut(plugin, slot)?
                 .ptr
                 .downcast_mut::<Box<Slot::TraitObject>>()?
                 .as_mut(),
@@ -195,11 +199,11 @@ where
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         let slot = Slot::id();
         Some(
-            self.get_exact_hook_mut(plugin, slot.borrow(), name)?
+            self.get_exact_hook_mut(plugin, slot, name)?
                 .ptr
                 .downcast_mut::<Box<Slot::TraitObject>>()?
                 .as_mut(),
@@ -214,7 +218,7 @@ where
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         let slot = Slot::id();
         let plugin_hooks = self.slot_hooks.get_mut(slot.borrow())?;
@@ -268,7 +272,7 @@ where
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         self.slot_hooks
             .get(Slot::id().borrow())
@@ -289,7 +293,7 @@ where
     where
         Id: Borrow<Q>,
         Q: Eq + Hash,
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         self.slot_hooks
             .get_mut(Slot::id().borrow())
@@ -307,7 +311,7 @@ where
         &self,
     ) -> impl FusedIterator<Item = (&Id, &Slot::TraitObject)>
     where
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         self.slot_hooks
             .get(Slot::id().borrow())
@@ -324,7 +328,7 @@ where
         &mut self,
     ) -> impl FusedIterator<Item = (&Id, &mut Slot::TraitObject)>
     where
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         self.slot_hooks
             .get_mut(Slot::id().borrow())
@@ -349,7 +353,7 @@ where
         name: Option<Id>,
     ) -> Result<(), Box<Slot::TraitObject>>
     where
-        Slot: HookSlot<Id>,
+        Slot: HookSlot,
     {
         let slot = Slot::id();
         let plugin_hooks = self.slot_hooks.entry(slot.clone()).or_default();
