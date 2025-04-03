@@ -1,4 +1,5 @@
 use crate::HookRegistry;
+use std::fmt::Display;
 use std::{
     any::Any,
     borrow::Borrow,
@@ -9,39 +10,66 @@ use std::{
 };
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum LoadPluginError {
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum LoadPluginError<Id> {
     #[error("plugin not found")]
     NotFound,
     #[error("plugin is already loaded")]
     AlreadyLoaded,
     #[error("plugin was not registered with a constructor")]
     MissingConstructor,
+
+    #[error("plugin dependency `{0}` load error: {1}")]
+    DependencyLoadError(Id, Box<LoadPluginError<Id>>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum EnablePluginError {
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum EnablePluginError<Id> {
     #[error("plugin not found")]
     NotFound,
     #[error("plugin is not loaded")]
     NotLoaded,
     #[error("plugin is already enabled")]
     AlreadyEnabled,
+
+    #[error("plugin dependency `{0}` load error: {1}")]
+    DependencyLoadError(Id, LoadPluginError<Id>),
+    #[error("plugin dependency `{0}` error: {1}")]
+    DependencyEnableError(Id, Box<EnablePluginError<Id>>),
 }
 
-pub trait PluginManifest<Id> {
-    fn id(&self) -> &Id;
+pub trait PluginManifest {
+    type PluginId;
+
+    fn id(&self) -> &Self::PluginId;
 }
 
 #[derive(Debug, Default)]
 pub struct SimplePluginManifest<Id = &'static str> {
     id: Id,
     description: &'static str,
+    dependencies: Vec<Id>,
 }
 
 impl<Id> SimplePluginManifest<Id> {
     pub fn new(id: Id, description: &'static str) -> Self {
-        Self { id, description }
+        Self {
+            id,
+            description,
+            dependencies: Vec::new(),
+        }
+    }
+
+    pub fn with_dependencies(id: Id, description: &'static str, dependencies: Vec<Id>) -> Self {
+        Self {
+            id,
+            description,
+            dependencies,
+        }
+    }
+
+    pub fn dependencies(&self) -> &[Id] {
+        &self.dependencies
     }
 
     pub fn description(&self) -> &str {
@@ -49,9 +77,20 @@ impl<Id> SimplePluginManifest<Id> {
     }
 }
 
-impl<Id> PluginManifest<Id> for SimplePluginManifest<Id> {
+impl<Id> PluginManifest for SimplePluginManifest<Id> {
+    type PluginId = Id;
+
     fn id(&self) -> &Id {
         &self.id
+    }
+}
+
+impl<Id> Display for SimplePluginManifest<Id>
+where
+    Id: Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{} plugin\n---\n{}", &self.id, &self.description)
     }
 }
 
@@ -72,20 +111,26 @@ impl<Id, Context> dyn Plugin<Id, Context> {
     }
 }
 
-struct PluginState<Id, Manifest, Context> {
+pub type FnPluginConstructor<Id, Context> = fn() -> Box<dyn Plugin<Id, Context>>;
+
+struct PluginState<Manifest, Context>
+where
+    Manifest: PluginManifest,
+{
     manifest: Manifest,
     enabled: bool,
-    #[allow(clippy::type_complexity)]
-    ctor: Option<fn() -> Box<dyn Plugin<Id, Context>>>,
-    plugin: Option<Box<dyn Plugin<Id, Context>>>,
+    ctor: Option<FnPluginConstructor<Manifest::PluginId, Context>>,
+    plugin: Option<Box<dyn Plugin<Manifest::PluginId, Context>>>,
 }
 
-impl<Id, Manifest, Context> PluginState<Id, Manifest, Context> {
-    #[allow(clippy::type_complexity)]
+impl<Manifest, Context> PluginState<Manifest, Context>
+where
+    Manifest: PluginManifest,
+{
     fn new(
         manifest: Manifest,
-        ctor: Option<fn() -> Box<dyn Plugin<Id, Context>>>,
-        plugin: Option<Box<dyn Plugin<Id, Context>>>,
+        ctor: Option<FnPluginConstructor<Manifest::PluginId, Context>>,
+        plugin: Option<Box<dyn Plugin<Manifest::PluginId, Context>>>,
     ) -> Self {
         Self {
             manifest,
@@ -96,9 +141,9 @@ impl<Id, Manifest, Context> PluginState<Id, Manifest, Context> {
     }
 }
 
-impl<Id, Manifest, Context> Debug for PluginState<Id, Manifest, Context>
+impl<Manifest, Context> Debug for PluginState<Manifest, Context>
 where
-    Manifest: Debug,
+    Manifest: PluginManifest + Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginState")
@@ -109,15 +154,18 @@ where
 }
 
 #[derive(Debug, Default)]
-pub struct PluginRegistry<Id = &'static str, Manifest = SimplePluginManifest<Id>, Context = ()> {
-    plugins: HashMap<Id, PluginState<Id, Manifest, Context>>,
-    hooks: HookRegistry<Id>,
+pub struct PluginRegistry<Manifest = SimplePluginManifest, Context = ()>
+where
+    Manifest: PluginManifest,
+{
+    plugins: HashMap<Manifest::PluginId, PluginState<Manifest, Context>>,
+    hooks: HookRegistry<Manifest::PluginId>,
 }
 
-impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context>
+impl<Manifest, Context> PluginRegistry<Manifest, Context>
 where
-    Manifest: PluginManifest<Id>,
-    Id: Eq + Hash,
+    Manifest: PluginManifest,
+    Manifest::PluginId: Eq + Hash,
 {
     pub fn new() -> Self {
         Self {
@@ -136,7 +184,7 @@ where
 
     pub fn exists<Q>(&self, id: &Q) -> bool
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.plugins.contains_key(id)
@@ -144,7 +192,7 @@ where
 
     pub fn is_loaded<Q>(&self, id: &Q) -> bool
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.plugins
@@ -154,27 +202,22 @@ where
 
     pub fn is_enabled<Q>(&self, id: &Q) -> bool
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
     {
         self.plugins.get(id).is_some_and(|state| state.enabled)
     }
-
-    pub fn get_manifest<Q>(&self, id: &Q) -> Option<&Manifest>
-    where
-        Id: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        self.plugins.get(id).map(|s| &s.manifest)
-    }
 }
 
-impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context> {
-    pub fn hooks(&self) -> &HookRegistry<Id> {
+impl<Manifest, Context> PluginRegistry<Manifest, Context>
+where
+    Manifest: PluginManifest,
+{
+    pub fn hooks(&self) -> &HookRegistry<Manifest::PluginId> {
         &self.hooks
     }
 
-    pub fn hooks_mut(&mut self) -> &mut HookRegistry<Id> {
+    pub fn hooks_mut(&mut self) -> &mut HookRegistry<Manifest::PluginId> {
         &mut self.hooks
     }
 
@@ -190,33 +233,32 @@ impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context> {
         self.plugins.values().filter(|p| p.enabled).count()
     }
 
-    pub fn plugin_ids(&self) -> impl FusedIterator<Item = &Id> {
+    pub fn plugin_ids(&self) -> impl FusedIterator<Item = &Manifest::PluginId> {
         self.plugins.keys()
     }
 
-    pub fn loaded_plugin_ids(&self) -> impl FusedIterator<Item = &Id> {
+    pub fn loaded_plugin_ids(&self) -> impl FusedIterator<Item = &Manifest::PluginId> {
         self.plugins
             .iter()
             .filter_map(|(k, p)| p.plugin.is_some().then_some(k))
     }
 
-    pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = &Id> {
+    pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = &Manifest::PluginId> {
         self.plugins
             .iter()
             .filter_map(|(k, p)| p.enabled.then_some(k))
     }
 }
 
-impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context>
+impl<Manifest, Context> PluginRegistry<Manifest, Context>
 where
-    Manifest: PluginManifest<Id>,
-    Id: Eq + Hash + Clone,
+    Manifest: PluginManifest,
+    Manifest::PluginId: Eq + Hash + Clone,
 {
-    #[allow(clippy::type_complexity)]
     pub fn register(
         &mut self,
         manifest: Manifest,
-        ctor: Option<fn() -> Box<dyn Plugin<Id, Context>>>,
+        ctor: Option<FnPluginConstructor<Manifest::PluginId, Context>>,
     ) -> bool {
         let id = manifest.id().clone();
         if let hash_map::Entry::Vacant(e) = self.plugins.entry(id) {
@@ -228,14 +270,23 @@ where
     }
 }
 
-impl<Id, Manifest, Context> PluginRegistry<Id, Manifest, Context>
+impl<Manifest, Context> PluginRegistry<Manifest, Context>
 where
-    Id: Eq + Hash + 'static,
+    Manifest: PluginManifest,
+    Manifest::PluginId: Eq + Hash + 'static,
     Context: 'static,
 {
+    pub fn get_manifest<Q>(&self, id: &Q) -> Option<&Manifest>
+    where
+        Manifest::PluginId: Borrow<Q>,
+        Q: Eq + Hash,
+    {
+        self.plugins.get(id).map(|s| &s.manifest)
+    }
+
     pub fn remove<Q>(&mut self, id: &Q, context: &mut Context) -> bool
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
@@ -255,9 +306,13 @@ where
         }
     }
 
-    pub fn load<Q>(&mut self, id: &Q, context: &mut Context) -> Result<(), LoadPluginError>
+    pub fn load<Q>(
+        &mut self,
+        id: &Q,
+        context: &mut Context,
+    ) -> Result<(), LoadPluginError<Manifest::PluginId>>
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
     {
         let state = self.plugins.get_mut(id).ok_or(LoadPluginError::NotFound)?;
@@ -277,11 +332,11 @@ where
         id: &Q,
         plugin: P,
         context: &mut Context,
-    ) -> Result<(), LoadPluginError>
+    ) -> Result<(), LoadPluginError<Manifest::PluginId>>
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
-        P: Into<Box<dyn Plugin<Id, Context>>>,
+        P: Into<Box<dyn Plugin<Manifest::PluginId, Context>>>,
     {
         let state = self.plugins.get_mut(id).ok_or(LoadPluginError::NotFound)?;
         if state.plugin.is_some() {
@@ -297,7 +352,7 @@ where
 
     pub fn unload<Q>(&mut self, id: &Q, context: &mut Context) -> bool
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
@@ -318,9 +373,13 @@ where
         }
     }
 
-    pub fn enable<Q>(&mut self, id: &Q, context: &mut Context) -> Result<(), EnablePluginError>
+    pub fn enable<Q>(
+        &mut self,
+        id: &Q,
+        context: &mut Context,
+    ) -> Result<(), EnablePluginError<Manifest::PluginId>>
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
     {
         let state = self
@@ -340,7 +399,7 @@ where
 
     pub fn disable<Q>(&mut self, id: &Q, context: &mut Context) -> bool
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
     {
         if let Some(state) = self.plugins.get_mut(id) {
@@ -356,27 +415,27 @@ where
 
     pub fn get_loaded<T, Q>(&self, id: &Q) -> Option<&T>
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<Id, Context>,
+        T: Plugin<Manifest::PluginId, Context>,
     {
         self.plugins.get(id)?.plugin.as_ref()?.downcast_ref()
     }
 
     pub fn get_loaded_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<Id, Context>,
+        T: Plugin<Manifest::PluginId, Context>,
     {
         self.plugins.get_mut(id)?.plugin.as_mut()?.downcast_mut()
     }
 
     pub fn get_enabled<T, Q>(&self, id: &Q) -> Option<&T>
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<Id, Context>,
+        T: Plugin<Manifest::PluginId, Context>,
     {
         let state = self.plugins.get(id)?;
         if state.enabled {
@@ -388,9 +447,9 @@ where
 
     pub fn get_enabled_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
     where
-        Id: Borrow<Q>,
+        Manifest::PluginId: Borrow<Q>,
         Q: Eq + Hash,
-        T: Plugin<Id, Context>,
+        T: Plugin<Manifest::PluginId, Context>,
     {
         let state = self.plugins.get_mut(id)?;
         if state.enabled {
