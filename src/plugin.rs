@@ -1,8 +1,10 @@
 use crate::HookRegistry;
+use petgraph::algo;
+use petgraph::prelude::*;
 use std::fmt::Display;
+use std::hash::{BuildHasher, RandomState};
 use std::{
     any::Any,
-    borrow::Borrow,
     collections::{HashMap, hash_map},
     fmt::Debug,
     hash::Hash,
@@ -10,38 +12,45 @@ use std::{
 };
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum LoadPluginError<Id> {
-    #[error("plugin not found")]
-    NotFound,
-    #[error("plugin is already loaded")]
-    AlreadyLoaded,
-    #[error("plugin was not registered with a constructor")]
-    MissingConstructor,
-
-    #[error("plugin dependency `{0}` load error: {1}")]
-    DependencyLoadError(Id, Box<LoadPluginError<Id>>),
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Error)]
+pub enum RegisterPluginError<Id> {
+    #[error("duplicate plugin `{0}` already registered")]
+    Duplicate(Id),
+    #[error("plugin `{0}` introduces a dependency cycle which cannot be resolved")]
+    CyclicDependency(Id),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum EnablePluginError<Id> {
-    #[error("plugin not found")]
-    NotFound,
-    #[error("plugin is not loaded")]
-    NotLoaded,
-    #[error("plugin is already enabled")]
-    AlreadyEnabled,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Error)]
+pub enum LoadPluginError<Id> {
+    #[error("plugin `{0}` not found")]
+    NotFound(Id),
+    #[error("attempted to load plugin `{0}` that was not registered with a constructor")]
+    MissingConstructor(Id),
 
-    #[error("plugin dependency `{0}` load error: {1}")]
-    DependencyLoadError(Id, LoadPluginError<Id>),
-    #[error("plugin dependency `{0}` error: {1}")]
-    DependencyEnableError(Id, Box<EnablePluginError<Id>>),
+    #[error("dependency `{dependency}` required by `{plugin}` not found")]
+    DependencyNotFound { plugin: Id, dependency: Id },
+    #[error(
+        "dependency `{dependency}` required by `{plugin}` does not match plugin requirements: {reason}"
+    )]
+    DependencyMismatch {
+        plugin: Id,
+        dependency: Id,
+        reason: String,
+    },
 }
 
 pub trait PluginManifest {
-    type PluginId;
+    type PluginId: Copy + Ord + Hash;
 
-    fn id(&self) -> &Self::PluginId;
+    fn id(&self) -> Self::PluginId;
+
+    fn dependencies(&self) -> &[Self::PluginId] {
+        &[]
+    }
+
+    fn dependency_matches(&self, _dependency: &Self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -68,20 +77,23 @@ impl<Id> SimplePluginManifest<Id> {
         }
     }
 
-    pub fn dependencies(&self) -> &[Id] {
-        &self.dependencies
-    }
-
     pub fn description(&self) -> &str {
         self.description
     }
 }
 
-impl<Id> PluginManifest for SimplePluginManifest<Id> {
+impl<Id> PluginManifest for SimplePluginManifest<Id>
+where
+    Id: Copy + Ord + Hash,
+{
     type PluginId = Id;
 
-    fn id(&self) -> &Id {
-        &self.id
+    fn id(&self) -> Id {
+        self.id
+    }
+
+    fn dependencies(&self) -> &[Id] {
+        &self.dependencies
     }
 }
 
@@ -153,66 +165,94 @@ where
     }
 }
 
-#[derive(Debug, Default)]
-pub struct PluginRegistry<Manifest = SimplePluginManifest, Context = ()>
+#[derive(Debug)]
+pub struct PluginRegistry<Manifest = SimplePluginManifest, Context = (), S = RandomState>
 where
     Manifest: PluginManifest,
+    S: BuildHasher,
 {
-    plugins: HashMap<Manifest::PluginId, PluginState<Manifest, Context>>,
-    hooks: HookRegistry<Manifest::PluginId>,
+    plugins: HashMap<Manifest::PluginId, PluginState<Manifest, Context>, S>,
+    hooks: HookRegistry<Manifest::PluginId, S>,
+    dependency_graph: GraphMap<Manifest::PluginId, usize, Directed, S>,
+}
+
+impl<Manifest, Context, S> PluginRegistry<Manifest, Context, S>
+where
+    Manifest: PluginManifest,
+    S: BuildHasher + Clone,
+{
+    pub fn with_hasher(hash_builder: S) -> Self {
+        Self {
+            plugins: HashMap::with_hasher(hash_builder.clone()),
+            hooks: HookRegistry::with_hasher(hash_builder.clone()),
+            dependency_graph: GraphMap::with_capacity_and_hasher(0, 0, hash_builder),
+        }
+    }
+
+    pub fn with_capacity_and_hasher(count: usize, hash_builder: S) -> Self {
+        Self {
+            plugins: HashMap::with_capacity_and_hasher(count, hash_builder.clone()),
+            hooks: HookRegistry::with_hasher(hash_builder.clone()),
+            dependency_graph: GraphMap::with_capacity_and_hasher(count, 0, hash_builder),
+        }
+    }
+
+    pub fn from_initializers_with_hasher(
+        callbacks: impl IntoIterator<Item = fn(&mut Self)>,
+        hash_builder: S,
+    ) -> Self {
+        let iter = callbacks.into_iter();
+        let mut this = Self::with_capacity_and_hasher(iter.size_hint().0, hash_builder);
+        for f in iter {
+            f(&mut this);
+        }
+        this
+    }
 }
 
 impl<Manifest, Context> PluginRegistry<Manifest, Context>
 where
     Manifest: PluginManifest,
-    Manifest::PluginId: Eq + Hash,
 {
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
             hooks: HookRegistry::new(),
+            dependency_graph: DiGraphMap::new(),
+        }
+    }
+
+    pub fn with_capacity(count: usize) -> Self {
+        Self {
+            plugins: HashMap::with_capacity(count),
+            hooks: HookRegistry::new(),
+            dependency_graph: GraphMap::with_capacity(count, 0),
         }
     }
 
     pub fn from_initializers(callbacks: impl IntoIterator<Item = fn(&mut Self)>) -> Self {
-        let mut this = Self::new();
-        for f in callbacks {
+        let iter = callbacks.into_iter();
+        let mut this = Self::with_capacity(iter.size_hint().0);
+        for f in iter {
             f(&mut this);
         }
         this
     }
 
-    pub fn exists<Q>(&self, id: &Q) -> bool
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        self.plugins.contains_key(id)
+    pub fn exists(&self, id: Manifest::PluginId) -> bool {
+        self.plugins.contains_key(&id)
     }
 
-    pub fn is_loaded<Q>(&self, id: &Q) -> bool
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
+    pub fn is_loaded(&self, id: Manifest::PluginId) -> bool {
         self.plugins
-            .get(id)
+            .get(&id)
             .is_some_and(|state| state.plugin.is_some())
     }
 
-    pub fn is_enabled<Q>(&self, id: &Q) -> bool
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        self.plugins.get(id).is_some_and(|state| state.enabled)
+    pub fn is_enabled(&self, id: Manifest::PluginId) -> bool {
+        self.plugins.get(&id).is_some_and(|state| state.enabled)
     }
-}
 
-impl<Manifest, Context> PluginRegistry<Manifest, Context>
-where
-    Manifest: PluginManifest,
-{
     pub fn hooks(&self) -> &HookRegistry<Manifest::PluginId> {
         &self.hooks
     }
@@ -233,39 +273,108 @@ where
         self.plugins.values().filter(|p| p.enabled).count()
     }
 
-    pub fn plugin_ids(&self) -> impl FusedIterator<Item = &Manifest::PluginId> {
-        self.plugins.keys()
+    pub fn plugin_ids(&self) -> impl FusedIterator<Item = Manifest::PluginId> {
+        self.plugins.keys().copied()
     }
 
-    pub fn loaded_plugin_ids(&self) -> impl FusedIterator<Item = &Manifest::PluginId> {
+    pub fn loaded_plugin_ids(&self) -> impl FusedIterator<Item = Manifest::PluginId> {
         self.plugins
             .iter()
             .filter_map(|(k, p)| p.plugin.is_some().then_some(k))
+            .copied()
     }
 
-    pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = &Manifest::PluginId> {
+    pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = Manifest::PluginId> {
         self.plugins
             .iter()
             .filter_map(|(k, p)| p.enabled.then_some(k))
+            .copied()
     }
-}
 
-impl<Manifest, Context> PluginRegistry<Manifest, Context>
-where
-    Manifest: PluginManifest,
-    Manifest::PluginId: Eq + Hash + Clone,
-{
     pub fn register(
         &mut self,
         manifest: Manifest,
         ctor: Option<FnPluginConstructor<Manifest::PluginId, Context>>,
-    ) -> bool {
-        let id = manifest.id().clone();
+    ) -> Result<Manifest::PluginId, RegisterPluginError<Manifest::PluginId>> {
+        let id = manifest.id();
         if let hash_map::Entry::Vacant(e) = self.plugins.entry(id) {
-            e.insert(PluginState::new(manifest, ctor, None));
-            true
+            let state = &mut e.insert(PluginState::new(manifest, ctor, None));
+
+            // Setup dependencies
+            self.dependency_graph.add_node(id);
+            for (i, &dep) in state.manifest.dependencies().iter().enumerate() {
+                self.dependency_graph.add_edge(id, dep, i);
+            }
+            // Check for cycles
+            if algo::is_cyclic_directed(&self.dependency_graph) {
+                // Rollback graph additions
+                for dep in self.dependency_graph.neighbors(id).collect::<Vec<_>>() {
+                    self.dependency_graph.remove_edge(id, dep);
+                    if self
+                        .dependency_graph
+                        .neighbors_directed(dep, Incoming)
+                        .next()
+                        .is_none()
+                    {
+                        self.dependency_graph.remove_node(dep);
+                    }
+                }
+
+                if self
+                    .dependency_graph
+                    .neighbors_directed(id, Incoming)
+                    .next()
+                    .is_none()
+                {
+                    self.dependency_graph.remove_node(id);
+                }
+            }
+
+            Ok(id)
         } else {
-            false
+            Err(RegisterPluginError::Duplicate(id))
+        }
+    }
+
+    pub fn get_manifest(&self, id: Manifest::PluginId) -> Option<&Manifest> {
+        self.plugins.get(&id).map(|s| &s.manifest)
+    }
+
+    pub fn get_loaded<T>(&self, id: Manifest::PluginId) -> Option<&T>
+    where
+        T: Plugin<Manifest::PluginId, Context>,
+    {
+        self.plugins.get(&id)?.plugin.as_ref()?.downcast_ref()
+    }
+
+    pub fn get_loaded_mut<T>(&mut self, id: Manifest::PluginId) -> Option<&mut T>
+    where
+        T: Plugin<Manifest::PluginId, Context>,
+    {
+        self.plugins.get_mut(&id)?.plugin.as_mut()?.downcast_mut()
+    }
+
+    pub fn get_enabled<T>(&self, id: Manifest::PluginId) -> Option<&T>
+    where
+        T: Plugin<Manifest::PluginId, Context>,
+    {
+        let state = self.plugins.get(&id)?;
+        if state.enabled {
+            state.plugin.as_ref()?.downcast_ref()
+        } else {
+            None
+        }
+    }
+
+    pub fn get_enabled_mut<T>(&mut self, id: Manifest::PluginId) -> Option<&mut T>
+    where
+        T: Plugin<Manifest::PluginId, Context>,
+    {
+        let state = self.plugins.get_mut(&id)?;
+        if state.enabled {
+            state.plugin.as_mut()?.downcast_mut()
+        } else {
+            None
         }
     }
 }
@@ -273,23 +382,11 @@ where
 impl<Manifest, Context> PluginRegistry<Manifest, Context>
 where
     Manifest: PluginManifest,
-    Manifest::PluginId: Eq + Hash + 'static,
+    Manifest::PluginId: 'static,
     Context: 'static,
 {
-    pub fn get_manifest<Q>(&self, id: &Q) -> Option<&Manifest>
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        self.plugins.get(id).map(|s| &s.manifest)
-    }
-
-    pub fn remove<Q>(&mut self, id: &Q, context: &mut Context) -> bool
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        if let Some(state) = self.plugins.get_mut(id) {
+    pub fn remove(&mut self, id: Manifest::PluginId, context: &mut Context) -> bool {
+        if let Some(state) = self.plugins.get_mut(&id) {
             if state.plugin.is_some() {
                 let plugin = state.plugin.as_mut().unwrap();
                 if state.enabled {
@@ -299,63 +396,112 @@ where
                 plugin.unload(context);
                 self.hooks.remove_plugin_hooks(id);
             }
-            self.plugins.remove(id);
+            self.plugins.remove(&id);
+
+            // Cleanup dependency graph, removing node if it has not incoming dependencies
+            if self
+                .dependency_graph
+                .neighbors_directed(id, Incoming)
+                .next()
+                .is_none()
+            {
+                self.dependency_graph.remove_node(id);
+            }
+
             true
         } else {
             false
         }
     }
 
-    pub fn load<Q>(
+    pub fn load(
         &mut self,
-        id: &Q,
+        id: Manifest::PluginId,
         context: &mut Context,
-    ) -> Result<(), LoadPluginError<Manifest::PluginId>>
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        let state = self.plugins.get_mut(id).ok_or(LoadPluginError::NotFound)?;
-        if state.plugin.is_some() {
-            Err(LoadPluginError::AlreadyLoaded)
-        } else {
+    ) -> Result<(), LoadPluginError<Manifest::PluginId>> {
+        if self
+            .plugins
+            .get_mut(&id)
+            .ok_or(LoadPluginError::NotFound(id))?
+            .plugin
+            .is_none()
+        {
+            self.load_dependencies(id, context)?;
+
+            let state = &mut self.plugins.get_mut(&id).unwrap();
             state
                 .plugin
-                .insert(state.ctor.ok_or(LoadPluginError::MissingConstructor)?())
+                .insert(state.ctor.ok_or(LoadPluginError::MissingConstructor(id))?())
                 .load(&mut self.hooks, context);
-            Ok(())
         }
+        Ok(())
     }
 
-    pub fn load_with<P, Q>(
+    fn load_dependencies(
         &mut self,
-        id: &Q,
+        id: Manifest::PluginId,
+        context: &mut Context,
+    ) -> Result<(), LoadPluginError<<Manifest as PluginManifest>::PluginId>> {
+        let mut dependencies = self
+            .dependency_graph
+            .edges(id)
+            .map(|(_, d, &i)| (d, i))
+            .collect::<Vec<_>>();
+        dependencies.sort_unstable_by_key(|(_, i)| *i);
+        for (dep, _) in dependencies {
+            let [state, dep_state] = self.plugins.get_disjoint_mut([&id, &dep]);
+            let dep_state = dep_state.ok_or(LoadPluginError::DependencyNotFound {
+                plugin: id,
+                dependency: dep,
+            })?;
+
+            // Ensure the dependency is loaded
+            if dep_state.plugin.is_none() {
+                state
+                    .unwrap()
+                    .manifest
+                    .dependency_matches(&dep_state.manifest)
+                    .map_err(|reason| LoadPluginError::DependencyMismatch {
+                        plugin: id,
+                        dependency: dep,
+                        reason,
+                    })?;
+
+                self.load(dep, context)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn load_with<P>(
+        &mut self,
+        id: Manifest::PluginId,
         plugin: P,
         context: &mut Context,
     ) -> Result<(), LoadPluginError<Manifest::PluginId>>
     where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
         P: Into<Box<dyn Plugin<Manifest::PluginId, Context>>>,
     {
-        let state = self.plugins.get_mut(id).ok_or(LoadPluginError::NotFound)?;
-        if state.plugin.is_some() {
-            Err(LoadPluginError::AlreadyLoaded)
-        } else {
+        if self
+            .plugins
+            .get_mut(&id)
+            .ok_or(LoadPluginError::NotFound(id))?
+            .plugin
+            .is_none()
+        {
+            self.load_dependencies(id, context)?;
+
+            let state = &mut self.plugins.get_mut(&id).unwrap();
             state
                 .plugin
                 .insert(plugin.into())
                 .load(&mut self.hooks, context);
-            Ok(())
         }
+        Ok(())
     }
 
-    pub fn unload<Q>(&mut self, id: &Q, context: &mut Context) -> bool
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        if let Some(state) = self.plugins.get_mut(id) {
+    pub fn unload(&mut self, id: Manifest::PluginId, context: &mut Context) -> bool {
+        if let Some(state) = self.plugins.get_mut(&id) {
             if state.plugin.is_some() {
                 let plugin = state.plugin.as_mut().unwrap();
                 if state.enabled {
@@ -373,36 +519,40 @@ where
         }
     }
 
-    pub fn enable<Q>(
+    pub fn enable(
         &mut self,
-        id: &Q,
+        id: Manifest::PluginId,
         context: &mut Context,
-    ) -> Result<(), EnablePluginError<Manifest::PluginId>>
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        let state = self
+    ) -> Result<(), LoadPluginError<Manifest::PluginId>> {
+        if !self
             .plugins
-            .get_mut(id)
-            .ok_or(EnablePluginError::NotFound)?;
-        if state.plugin.is_none() {
-            Err(EnablePluginError::NotLoaded)
-        } else if state.enabled {
-            Err(EnablePluginError::AlreadyEnabled)
-        } else {
+            .get_mut(&id)
+            .ok_or(LoadPluginError::NotFound(id))?
+            .enabled
+        {
+            // Ensure plugin already loaded
+            self.load(id, context)?;
+
+            // Ensure dependencies are all enabled
+            let mut dependencies = self
+                .dependency_graph
+                .edges(id)
+                .map(|(_, d, &i)| (d, i))
+                .collect::<Vec<_>>();
+            dependencies.sort_unstable_by_key(|(_, i)| *i);
+            for (dep, _) in dependencies {
+                self.enable(dep, context)?;
+            }
+
+            let state = &mut self.plugins.get_mut(&id).unwrap();
             state.plugin.as_mut().unwrap().enable(context);
             state.enabled = true;
-            Ok(())
         }
+        Ok(())
     }
 
-    pub fn disable<Q>(&mut self, id: &Q, context: &mut Context) -> bool
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-    {
-        if let Some(state) = self.plugins.get_mut(id) {
+    pub fn disable(&mut self, id: Manifest::PluginId, context: &mut Context) -> bool {
+        if let Some(state) = self.plugins.get_mut(&id) {
             if state.enabled {
                 state.plugin.as_mut().unwrap().disable(context);
                 state.enabled = false;
@@ -412,50 +562,28 @@ where
             false
         }
     }
+}
 
-    pub fn get_loaded<T, Q>(&self, id: &Q) -> Option<&T>
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-        T: Plugin<Manifest::PluginId, Context>,
-    {
-        self.plugins.get(id)?.plugin.as_ref()?.downcast_ref()
-    }
-
-    pub fn get_loaded_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-        T: Plugin<Manifest::PluginId, Context>,
-    {
-        self.plugins.get_mut(id)?.plugin.as_mut()?.downcast_mut()
-    }
-
-    pub fn get_enabled<T, Q>(&self, id: &Q) -> Option<&T>
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-        T: Plugin<Manifest::PluginId, Context>,
-    {
-        let state = self.plugins.get(id)?;
-        if state.enabled {
-            state.plugin.as_ref()?.downcast_ref()
-        } else {
-            None
+impl<Manifest, Context, S> Default for PluginRegistry<Manifest, Context, S>
+where
+    Manifest: PluginManifest,
+    S: BuildHasher + Default,
+{
+    fn default() -> Self {
+        Self {
+            plugins: HashMap::default(),
+            hooks: HookRegistry::default(),
+            dependency_graph: GraphMap::default(),
         }
     }
+}
 
-    pub fn get_enabled_mut<T, Q>(&mut self, id: &Q) -> Option<&mut T>
-    where
-        Manifest::PluginId: Borrow<Q>,
-        Q: Eq + Hash,
-        T: Plugin<Manifest::PluginId, Context>,
-    {
-        let state = self.plugins.get_mut(id)?;
-        if state.enabled {
-            state.plugin.as_mut()?.downcast_mut()
-        } else {
-            None
-        }
+impl<Manifest, Context, S> FromIterator<fn(&mut Self)> for PluginRegistry<Manifest, Context, S>
+where
+    Manifest: PluginManifest,
+    S: BuildHasher + Default + Clone,
+{
+    fn from_iter<T: IntoIterator<Item = fn(&mut Self)>>(iter: T) -> Self {
+        PluginRegistry::from_initializers_with_hasher(iter, S::default())
     }
 }

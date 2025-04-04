@@ -7,6 +7,7 @@ rust-version = "1.86"
 publish = false
 
 [dependencies]
-linkme = "0.3.32"
+linkme = { version = "0.3.32" }
+petgraph = { version = "0.7.1", default-features = false, features = ["graphmap"] }
 thiserror = "2.0.12"
 
