@@ -385,17 +385,24 @@ where
     Manifest::PluginId: 'static,
     Context: 'static,
 {
-    pub fn remove(&mut self, id: Manifest::PluginId, context: &mut Context) -> bool {
-        if let Some(state) = self.plugins.get_mut(&id) {
-            if state.plugin.is_some() {
-                let plugin = state.plugin.as_mut().unwrap();
-                if state.enabled {
-                    plugin.disable(context);
-                    state.enabled = false;
-                }
-                plugin.unload(context);
-                self.hooks.remove_plugin_hooks(id);
-            }
+    pub fn remove(
+        &mut self,
+        id: Manifest::PluginId,
+        context: &mut Context,
+    ) -> (
+        bool,
+        impl IntoIterator<Item = Manifest::PluginId>,
+        impl IntoIterator<Item = Manifest::PluginId>,
+    ) {
+        let mut result = false;
+        let mut unloaded = Vec::new();
+        let mut disabled = Vec::new();
+        if self.plugins.get_mut(&id).is_some() {
+            // Ensure unloaded first
+            let (dep_unloaded, dep_disabled) = self.unload(id, context);
+            unloaded.extend(dep_unloaded);
+            disabled.extend(dep_disabled);
+
             self.plugins.remove(&id);
 
             // Cleanup dependency graph, removing node if it has not incoming dependencies
@@ -408,10 +415,9 @@ where
                 self.dependency_graph.remove_node(id);
             }
 
-            true
-        } else {
-            false
+            result = true;
         }
+        (result, unloaded, disabled)
     }
 
     pub fn load(
@@ -500,23 +506,43 @@ where
         Ok(())
     }
 
-    pub fn unload(&mut self, id: Manifest::PluginId, context: &mut Context) -> bool {
-        if let Some(state) = self.plugins.get_mut(&id) {
-            if state.plugin.is_some() {
-                let plugin = state.plugin.as_mut().unwrap();
-                if state.enabled {
-                    plugin.disable(context);
-                    state.enabled = false;
-                }
-                plugin.unload(context);
-                self.hooks.remove_plugin_hooks(id);
-                true
-            } else {
-                false
+    pub fn unload(
+        &mut self,
+        id: Manifest::PluginId,
+        context: &mut Context,
+    ) -> (
+        impl IntoIterator<Item = Manifest::PluginId>,
+        impl IntoIterator<Item = Manifest::PluginId>,
+    ) {
+        let mut unloaded = Vec::new();
+        let mut disabled = Vec::new();
+        if self
+            .plugins
+            .get_mut(&id)
+            .is_some_and(|state| state.plugin.is_some())
+        {
+            // Disable first
+            disabled.extend(self.disable(id, context));
+
+            // Unload downstream dependents first
+            let mut dependents = self
+                .dependency_graph
+                .edges(id)
+                .map(|(_, d, &i)| (d, i))
+                .collect::<Vec<_>>();
+            dependents.sort_unstable_by_key(|(_, i)| *i);
+            for (dep, _) in dependents.into_iter().rev() {
+                let (dep_unloaded, dep_disabled) = self.unload(dep, context);
+                unloaded.extend(dep_unloaded);
+                disabled.extend(dep_disabled);
             }
-        } else {
-            false
+
+            let state = &mut self.plugins.get_mut(&id).unwrap();
+            state.plugin.as_mut().unwrap().unload(context);
+            self.hooks.remove_plugin_hooks(id);
+            unloaded.push(id);
         }
+        (unloaded, disabled)
     }
 
     pub fn enable(
@@ -551,16 +577,30 @@ where
         Ok(())
     }
 
-    pub fn disable(&mut self, id: Manifest::PluginId, context: &mut Context) -> bool {
-        if let Some(state) = self.plugins.get_mut(&id) {
-            if state.enabled {
-                state.plugin.as_mut().unwrap().disable(context);
-                state.enabled = false;
+    pub fn disable(
+        &mut self,
+        id: Manifest::PluginId,
+        context: &mut Context,
+    ) -> impl IntoIterator<Item = Manifest::PluginId> {
+        let mut disabled = Vec::new();
+        if self.plugins.get_mut(&id).is_some_and(|state| state.enabled) {
+            // Ensure downstream dependents are all disabled first
+            let mut dependents = self
+                .dependency_graph
+                .edges_directed(id, Incoming)
+                .map(|(_, d, &i)| (d, i))
+                .collect::<Vec<_>>();
+            dependents.sort_unstable_by_key(|(_, i)| *i);
+            for (dep, _) in dependents.into_iter().rev() {
+                disabled.extend(self.disable(dep, context));
             }
-            true
-        } else {
-            false
+
+            let state = &mut self.plugins.get_mut(&id).unwrap();
+            state.plugin.as_mut().unwrap().disable(context);
+            state.enabled = false;
+            disabled.push(id);
         }
+        disabled
     }
 }
 
