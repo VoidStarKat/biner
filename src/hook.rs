@@ -1,13 +1,35 @@
 use std::any::{Any, TypeId};
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 use std::iter::FusedIterator;
 
+/// Defines a slot for extension by hooks. A type that implements this trait will be used
+/// as the key for accessing hook objects. Since these slot types are never instantiated, zero-sized
+/// types are usually sufficient.
+///
+/// # Examples
+///
+/// ```rust
+/// use biner::HookSlot;
+///
+/// trait MyHookTrait: std::any::Any + Send + Sync {
+///     // ... insert a custom hook interface for the MyHook slot
+/// }
+///
+/// struct MyHook; // The slot type will be used as key
+///
+/// impl HookSlot for MyHook {
+///     type TraitObject = dyn MyHookTrait; // Indicate the trait object to be used for hooks
+/// }
+/// ```
 pub trait HookSlot: 'static {
+    /// The trait object used for this slot. This should be a `dyn` trait object and is required
+    /// to be set when implementing this trait for a hook slot.
     type TraitObject: ?Sized + Any + Send + Sync;
 
+    /// Gets the unique identifier for this hook slot, which by default is just the `TypeId` of the
+    /// slot's type, but is valid to give any unique type id.
     fn id() -> TypeId {
         TypeId::of::<Self>()
     }
@@ -60,7 +82,7 @@ where
     Id: Debug,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KeyedHook")
+        f.debug_struct("Hook")
             .field("plugin", &self.plugin)
             .field("slot", &self.slot)
             .field("name", &self.name)
@@ -68,6 +90,21 @@ where
     }
 }
 
+/// Manages hooks for plugins. Hooks are types implementing hook traits (which can be any `'static`
+/// trait that is [`Send`] and [`Sync`]). These hooks are then attached to "hook slots" by plugins.
+/// Hook slots are a type implementing [`HookSlot`] and the slot types are used as generic type
+/// keys to manage these hooks. Hooks are indexed internally by plugin, hook slot, and an optional
+/// name discriminator. This means a plugin can register multiple hooks for the same slot as long
+/// as each hook has a different name.
+///
+/// # Generic Arguments
+///
+/// `Id` is the type used for identifying plugins and hook names. This type should be a type that is
+/// [`Ord`], [`Hash`], and [`Copy`]. It is generic so that interned strings, UUIDs, or other
+/// different styles of ids can be used instead of `&'static str`. Plugin ids are determined by the
+/// plugin host by specifying the [`PluginManifest::PluginId`] type.
+///
+/// `S` allows you to specify an alternative hasher for the internal indexes of the hooks.
 #[derive(Debug)]
 pub struct HookRegistry<Id = &'static str, S = RandomState> {
     slot_hooks: HashMap<TypeId, HashMap<Id, Vec<Hook<Id>>, S>, S>,
@@ -92,11 +129,21 @@ where
         }
     }
 
-    pub fn exists(&self, plugin: Id, slot: TypeId) -> bool {
+    /// Gets whether any hooks have been added by the specified plugin for a hook slot.
+    pub fn exists<Slot>(&self, plugin: Id) -> bool
+    where
+        Slot: HookSlot,
+    {
+        let slot = Slot::id();
         self.get_first_hook(plugin, slot).is_some()
     }
 
-    pub fn exists_exact(&self, plugin: Id, slot: TypeId, name: Option<Id>) -> bool {
+    /// Gets whether a hook with the exact name was added by the specified plugin for a hook slot.
+    pub fn exists_exact<Slot>(&self, plugin: Id, name: Option<Id>) -> bool
+    where
+        Slot: HookSlot,
+    {
+        let slot = Slot::id();
         self.get_exact_hook(plugin, slot, name).is_some()
     }
 
@@ -132,6 +179,7 @@ where
             .find(|h| h.name == name)
     }
 
+    /// Get the first dyn object hook added by a plugin for the hook slot.
     pub fn get_first<Slot>(&self, plugin: Id) -> Option<&Slot::TraitObject>
     where
         Slot: HookSlot,
@@ -145,6 +193,7 @@ where
         )
     }
 
+    /// Get the dyn object hook with the specified name added by a plugin for the hook slot.
     pub fn get_exact<Slot>(&self, plugin: Id, name: Option<Id>) -> Option<&Slot::TraitObject>
     where
         Slot: HookSlot,
@@ -158,6 +207,7 @@ where
         )
     }
 
+    /// Get the first dyn mutable object hook added by a plugin for the hook slot.
     pub fn get_first_mut<Slot>(&mut self, plugin: Id) -> Option<&mut Slot::TraitObject>
     where
         Slot: HookSlot,
@@ -171,6 +221,7 @@ where
         )
     }
 
+    /// Get the dyn mutable object hook with the specified name added by a plugin for the hook slot.
     pub fn get_exact_mut<Slot>(
         &mut self,
         plugin: Id,
@@ -188,12 +239,14 @@ where
         )
     }
 
+    /// Remove a specific hook from the registry matching the plugin id, name, and hook slot. If a
+    /// matching hook existed, returns the removed dyn object.
     pub fn remove<Slot>(&mut self, plugin: Id, name: Option<Id>) -> Option<Box<Slot::TraitObject>>
     where
         Slot: HookSlot,
     {
         let slot = Slot::id();
-        let plugin_hooks = self.slot_hooks.get_mut(slot.borrow())?;
+        let plugin_hooks = self.slot_hooks.get_mut(&slot)?;
         let hooks = plugin_hooks.get_mut(&plugin)?;
         let idx = hooks.iter().position(|h| h.name == name)?;
         Some(
@@ -205,12 +258,14 @@ where
         )
     }
 
+    /// Remove all hooks added by a plugin.
     pub fn remove_plugin_hooks(&mut self, plugin: Id) {
         for plugin_hooks in self.slot_hooks.values_mut() {
             plugin_hooks.remove(&plugin);
         }
     }
 
+    /// Shrink the capacities allocated internally by the registry.
     pub fn shrink_to_fit(&mut self) {
         for plugin_hooks in self.slot_hooks.values_mut() {
             plugin_hooks.retain(|_, v| {
@@ -231,6 +286,8 @@ where
         self.slot_hooks.shrink_to_fit();
     }
 
+    /// Get an iterator over the plugin hooks for the specified slot. This is often simply a single
+    /// hook unless unique names are used when registering multiple hooks.
     pub fn plugin_slot_hooks<Slot>(
         &self,
         plugin: Id,
@@ -239,7 +296,7 @@ where
         Slot: HookSlot,
     {
         self.slot_hooks
-            .get(Slot::id().borrow())
+            .get(&Slot::id())
             .into_iter()
             .flat_map(move |m| m.get(&plugin))
             .flatten()
@@ -250,6 +307,8 @@ where
             })
     }
 
+    /// Get an iterator over the mutable plugin hooks for the specified slot. This is often simply a
+    /// single hook unless unique names are used when registering multiple hooks.
     pub fn plugin_slot_hooks_mut<Slot>(
         &mut self,
         plugin: Id,
@@ -258,7 +317,7 @@ where
         Slot: HookSlot,
     {
         self.slot_hooks
-            .get_mut(Slot::id().borrow())
+            .get_mut(&Slot::id())
             .into_iter()
             .flat_map(move |m| m.get_mut(&plugin))
             .flatten()
@@ -269,12 +328,14 @@ where
             })
     }
 
+    /// Get an iterator over all the hooks from all plugins registered to a slot, including the id
+    /// of the plugin that registered that slot.
     pub fn slot_hooks_and_plugin<Slot>(&self) -> impl FusedIterator<Item = (Id, &Slot::TraitObject)>
     where
         Slot: HookSlot,
     {
         self.slot_hooks
-            .get(Slot::id().borrow())
+            .get(&Slot::id())
             .into_iter()
             .flatten()
             .flat_map(|m| {
@@ -284,6 +345,8 @@ where
             })
     }
 
+    /// Get an iterator over all the mutable hooks from all plugins registered to a slot, including \
+    /// the id of the plugin that registered that slot.
     pub fn slot_hooks_and_plugin_mut<Slot>(
         &mut self,
     ) -> impl FusedIterator<Item = (Id, &mut Slot::TraitObject)>
@@ -291,7 +354,7 @@ where
         Slot: HookSlot,
     {
         self.slot_hooks
-            .get_mut(Slot::id().borrow())
+            .get_mut(&Slot::id())
             .into_iter()
             .flatten()
             .flat_map(|m| {
@@ -307,6 +370,7 @@ where
     Id: Copy + Ord + Hash,
     S: BuildHasher + Default,
 {
+    /// Register a hook for a slot with the given plugin and optional name.
     pub fn register<Slot>(
         &mut self,
         hook: Box<Slot::TraitObject>,
