@@ -82,11 +82,12 @@ pub trait PluginManifest {
         &[]
     }
 
-    /// Determines if the manifest of a plugin dependency specified by [`dependencies`] matches the
-    /// dependency requirements for this plugin. This allows complex dependency requirements not
-    /// enabled by default such as plugin version requirements or feature flags. If the dependency
-    /// manifest does not match the plugin's requirements, a [`String`] [`Err`] detailing the reason
-    /// indicates a failed match; an [`Ok`] result is a successful match.
+    /// Determines if the manifest of a plugin dependency specified by
+    /// [`PluginManifest::dependencies`] matches the dependency requirements for this plugin. This
+    /// allows complex dependency requirements not enabled by default such as plugin version
+    /// requirements or feature flags. If the dependency manifest does not match the plugin's
+    /// requirements, a [`String`] [`Err`] detailing the reason indicates a failed match; an [`Ok`]
+    /// result is a successful match.
     ///
     /// The default implementation always matches all dependencies without error.
     fn dependency_matches(&self, _dependency: &Self) -> Result<(), String> {
@@ -398,7 +399,7 @@ where
     /// Register a plugin if a plugin with the same id as specified in the `manifest` has not
     /// already been registered and return its id. An optional constructor function for the plugin
     /// can also be registered, but without a constructor the only way to load a plugin is with
-    /// [`load_with`] providing an instance of the plugin manually.
+    /// [`PluginRegistry::load_with`] providing an instance of the plugin manually.
     ///
     /// Dependency plugins specified in the plugin manifest will need to also be registered before
     /// loading the plugin, and those dependencies *must* have been registered with a constructor
@@ -597,10 +598,10 @@ where
     /// `context` to the plugin's [`Plugin::load`] method. If this plugin lists any dependencies
     /// in its manifest, attempts to load all of its dependencies before loading the specified
     /// plugin. The plugin will be created using the construction function registered with
-    /// the plugin. See [`register`] for more details.
+    /// the plugin. See [`PluginRegistry::register`] for more details.
     ///
-    /// Use [`load_with`] to bypass the plugin constructor and use a provided plugin instance
-    /// instead.
+    /// Use [`PluginRegistry::load_with`] to bypass the plugin constructor and use a provided plugin
+    /// instance instead.
     ///
     /// # Errors
     ///
@@ -679,8 +680,8 @@ where
     /// in its manifest, attempts to load all of its dependencies before loading the specified
     /// plugin.
     ///
-    /// Unlike [`load`], does not use the plugin's registered constructor, if any, and instead uses
-    /// the provided `plugin` instance.
+    /// Unlike [`PluginRegistry::load`], does not use the plugin's registered constructor, if any,
+    /// and instead uses the provided `plugin` instance.
     ///
     /// # Errors
     ///
@@ -769,7 +770,8 @@ where
     /// Enable the plugin loaded with the given plugin id if it is not currently enabled, passing
     /// `context` to the plugin's [`Plugin::enable`] method. If this plugin lists any dependencies
     /// in its manifest, attempts to enable all of its dependencies before enabling the specified
-    /// plugin. If the plugin has not been loaded yet, will [`load`] the plugin first.
+    /// plugin. If the plugin has not been loaded yet, will [`PluginRegistry::load`] the plugin
+    /// first.
     ///
     /// # Errors
     ///

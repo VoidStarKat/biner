@@ -1,4 +1,4 @@
-//! Plugin framework with trait hooks
+//! A modular plugin framework with trait hooks.
 
 #![warn(missing_docs)]
 
@@ -69,7 +69,7 @@ macro_rules! static_plugin_slot {
 /// register_static_plugin!{
 ///     MY_PLUGINS:
 ///     MyPlugin
-///     SimplePluginManifest::new('my_plugin', 'My plugin example');
+///     SimplePluginManifest::new("my_plugin", "My plugin example");
 ///     MyPlugin::new()
 /// }
 /// ```

@@ -102,7 +102,7 @@ where
 /// `Id` is the type used for identifying plugins and hook names. This type should be a type that is
 /// [`Ord`], [`Hash`], and [`Copy`]. It is generic so that interned strings, UUIDs, or other
 /// different styles of ids can be used instead of `&'static str`. Plugin ids are determined by the
-/// plugin host by specifying the [`PluginManifest::PluginId`] type.
+/// plugin host by specifying the [`PluginManifest::PluginId`][super::PluginManifest::PluginId] type.
 ///
 /// `S` allows you to specify an alternative hasher for the internal indexes of the hooks.
 #[derive(Debug)]
