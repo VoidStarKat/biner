@@ -19,7 +19,7 @@ pub use plugin::*;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```standalone_crate
 /// use biner::{static_plugin_slot, PluginRegistry};
 ///
 /// // Plugin host declares the slot
@@ -41,6 +41,8 @@ macro_rules! static_plugin_slot {
 
 /// Registers a plugin to a static plugin slot to be later discovered by the plugin host. The
 /// plugin slot must already have been declared using [`static_plugin_slot`] by the plugin host.
+/// The plugin host will then be able to consume all registered plugins by using
+/// [`PluginRegistry::from_initializers`].
 ///
 /// The provided plugin must implement [`Plugin`] and an expression constructing a manifest for
 /// the plugin and an expression constructing the plugin must be provided to this macro.
@@ -50,35 +52,45 @@ macro_rules! static_plugin_slot {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```standalone_crate
 /// use biner::{static_plugin_slot, register_static_plugin, Plugin, SimplePluginManifest};
 ///
 /// // Plugin host declares the slot
 /// static_plugin_slot!(pub MY_PLUGINS);
 ///
+/// // ...
+///
+/// // Plugin can be defined in another module or even crate
 /// struct MyPlugin;
 ///
-/// impl Plugin for MyPlugin {}
+/// impl Plugin for MyPlugin {
+///     // ...
+/// }
 ///
 /// impl MyPlugin {
-///     fn new() -> MyPlugin {
-///         MyPlugin
+///     // Requires some sort of constructor function with this signature
+///     fn new_boxed_plugin() -> Box<dyn Plugin> {
+///         Box::new(MyPlugin)
 ///     }
-/// }
+///  }
 ///
+/// // Will add plugin to MY_PLUGINS slot to be accessible from `PluginRegistry::from_initializers`
 /// register_static_plugin!{
-///     MY_PLUGINS:
-///     MyPlugin
+///     MY_PLUGINS: // The declared plugin slot
+///     init_my_plugin // Name of the initializer function that will be added to the slot
+///     // Provided plugin manifest, which can be any expression returning a manifest
 ///     SimplePluginManifest::new("my_plugin", "My plugin example");
-///     MyPlugin::new()
-/// }
+///     MyPlugin::new_boxed_plugin // Path to plugin constructor function
+///  }
+///
+/// # fn main() {} // Just needs to compile
 /// ```
 #[macro_export]
 macro_rules! register_static_plugin {
-    ($(#[$meta:meta])* $slot:ident $(<$($targ:ty),+>)? : $name:ident $manifest:expr ; $init:expr ) => {
+    ($(#[$meta:meta])* $slot:ident $(<$($targ:ty),+>)? : $pub:vis $name:ident $manifest:expr ; $init:expr ) => {
         $(#[$meta])*
         #[$crate::static_plugin_initializer($slot)]
-        fn $name(registry: &mut $crate::PluginRegistry$(<$($targ),+>)?) {
+        $pub fn $name(registry: &mut $crate::PluginRegistry$(<$($targ),+>)?) {
             registry.register($manifest, ::std::option::Option::Some($init));
         }
     };
