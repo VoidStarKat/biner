@@ -1,6 +1,7 @@
 use crate::HookRegistry;
 use petgraph::algo;
 use petgraph::prelude::*;
+use std::borrow::Cow;
 use std::fmt::Display;
 use std::hash::{BuildHasher, RandomState};
 use std::{
@@ -73,11 +74,13 @@ pub trait PluginManifest {
     type PluginId: Copy + Ord + Hash;
 
     /// Get the id of the plugin this manifest represents. This id should never change for a plugin.
+    #[must_use]
     fn id(&self) -> Self::PluginId;
 
     /// A set of required plugin dependencies that must be loaded/enabled prior to loading/enabling
     /// this plugin. It is a runtime error to specify dependencies that result in a cycle of
     /// dependency references.
+    #[must_use]
     fn dependencies(&self) -> &[Self::PluginId] {
         &[]
     }
@@ -101,37 +104,40 @@ pub trait PluginManifest {
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
 pub struct SimplePluginManifest<Id = &'static str> {
     id: Id,
-    description: &'static str,
+    description: Cow<'static, str>,
     dependencies: Vec<Id>,
 }
 
 impl<Id> SimplePluginManifest<Id> {
     /// Create a plugin manifest with a given plugin id and description and no plugin dependencies.
-    pub const fn new(id: Id, description: &'static str) -> Self {
+    #[must_use]
+    pub fn new(id: Id, description: impl Into<Cow<'static, str>>) -> Self {
         Self {
             id,
-            description,
+            description: description.into(),
             dependencies: Vec::new(),
         }
     }
 
     /// Create a plugin manifest with a given plugin id and description and a list of plugin
     /// dependencies.
-    pub const fn with_dependencies(
+    #[must_use]
+    pub fn with_dependencies(
         id: Id,
-        description: &'static str,
+        description: impl Into<Cow<'static, str>>,
         dependencies: Vec<Id>,
     ) -> Self {
         Self {
             id,
-            description,
+            description: description.into(),
             dependencies,
         }
     }
 
     /// Get the description of the plugin.
-    pub const fn description(&self) -> &str {
-        self.description
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
     }
 }
 
@@ -186,11 +192,13 @@ pub trait Plugin<Id = &'static str, Context = ()>: Any + Send + Sync {
 
 impl<Id, Context> dyn Plugin<Id, Context> {
     /// Cast this dyn plugin object back into a reference to its concrete type.
+    #[must_use]
     pub fn downcast_ref<T: Plugin<Id, Context>>(&self) -> Option<&T> {
         (self as &dyn Any).downcast_ref()
     }
 
     /// Cast this dyn plugin object back into a mutable reference to its concrete type.
+    #[must_use]
     pub fn downcast_mut<T: Plugin<Id, Context>>(&mut self) -> Option<&mut T> {
         (self as &mut dyn Any).downcast_mut()
     }
@@ -262,6 +270,7 @@ where
     S: BuildHasher + Clone,
 {
     /// Construct an empty plugin registry with a custom hash builder for its internal indexes.
+    #[must_use]
     pub fn with_hasher(hash_builder: S) -> Self {
         Self {
             plugins: HashMap::with_hasher(hash_builder.clone()),
@@ -272,6 +281,7 @@ where
 
     /// Construct an empty plugin registry with a custom hash builder for its internal indexes and
     /// an initial plugin capacity count.
+    #[must_use]
     pub fn with_capacity_and_hasher(count: usize, hash_builder: S) -> Self {
         Self {
             plugins: HashMap::with_capacity_and_hasher(count, hash_builder.clone()),
@@ -282,6 +292,7 @@ where
 
     /// Construct a plugin registry with a custom hash builder for its internal indexes and register
     /// plugins from all static plugin initializers in the specified `callbacks` slot.
+    #[must_use]
     pub fn from_initializers_with_hasher<'a>(
         callbacks: impl IntoIterator<Item = &'a fn(&mut Self)>,
         hash_builder: S,
@@ -305,6 +316,7 @@ where
     Manifest: PluginManifest,
 {
     /// Construct a empty plugin registry.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
@@ -314,6 +326,7 @@ where
     }
 
     /// Construct a empty plugin registry with
+    #[must_use]
     pub fn with_capacity(count: usize) -> Self {
         Self {
             plugins: HashMap::with_capacity(count),
@@ -324,6 +337,7 @@ where
 
     /// Construct a plugin registry and register plugins from all static plugin initializers in the
     /// specified `callbacks` slot.
+    #[must_use]
     pub fn from_initializers<'a>(callbacks: impl IntoIterator<Item = &'a fn(&mut Self)>) -> Self
     where
         Context: 'a,
@@ -338,11 +352,13 @@ where
     }
 
     /// Determine whether a plugin with the given plugin id is registered.
+    #[must_use]
     pub fn exists(&self, id: Manifest::PluginId) -> bool {
         self.plugins.contains_key(&id)
     }
 
     /// Determine whether a plugin with the given plugin id is currently loaded.
+    #[must_use]
     pub fn is_loaded(&self, id: Manifest::PluginId) -> bool {
         self.plugins
             .get(&id)
@@ -350,41 +366,49 @@ where
     }
 
     /// Determine whether a plugin with the given plugin id is currently enabled.
+    #[must_use]
     pub fn is_enabled(&self, id: Manifest::PluginId) -> bool {
         self.plugins.get(&id).is_some_and(|state| state.enabled)
     }
 
     /// Get a reference to the hook registry for managing plugin hooks.
+    #[must_use]
     pub fn hooks(&self) -> &HookRegistry<Manifest::PluginId> {
         &self.hooks
     }
 
     /// Get a mutalbe reference to hook registry for managing plugin hooks.
+    #[must_use]
     pub fn hooks_mut(&mut self) -> &mut HookRegistry<Manifest::PluginId> {
         &mut self.hooks
     }
 
     /// Get the number of registered plugins.
+    #[must_use]
     pub fn plugin_count(&self) -> usize {
         self.plugins.len()
     }
 
     /// Get the number of currently loaded plugins.
+    #[must_use]
     pub fn loaded_plugin_count(&self) -> usize {
         self.plugins.values().filter(|p| p.plugin.is_some()).count()
     }
 
     /// Get the number of currently enabled plugins.
+    #[must_use]
     pub fn enabled_plugin_count(&self) -> usize {
         self.plugins.values().filter(|p| p.enabled).count()
     }
 
     /// Get an iterator over all the registered plugin ids.
+    #[must_use]
     pub fn plugin_ids(&self) -> impl FusedIterator<Item = Manifest::PluginId> {
         self.plugins.keys().copied()
     }
 
     /// Get an iterator over all the currently loaded plugin ids.
+    #[must_use]
     pub fn loaded_plugin_ids(&self) -> impl FusedIterator<Item = Manifest::PluginId> {
         self.plugins
             .iter()
@@ -393,6 +417,7 @@ where
     }
 
     /// Get an iterator over all the currently enabled plugin ids.
+    #[must_use]
     pub fn enabled_plugin_ids(&self) -> impl FusedIterator<Item = Manifest::PluginId> {
         self.plugins
             .iter()
@@ -462,12 +487,14 @@ where
     }
 
     /// Get a reference to the plugin manifest by its id if that plugin has been registered.
+    #[must_use]
     pub fn get_manifest(&self, id: Manifest::PluginId) -> Option<&Manifest> {
         self.plugins.get(&id).map(|s| &s.manifest)
     }
 
     /// Get a reference to the dyn plugin object of the plugin with the given id if it is currently
     /// loaded.
+    #[must_use]
     pub fn get_loaded_plugin(
         &self,
         id: Manifest::PluginId,
@@ -477,6 +504,7 @@ where
 
     /// Get a mutable reference to the dyn plugin object of the plugin with the given id if it is
     /// currently loaded
+    #[must_use]
     pub fn get_loaded_plugin_mut(
         &mut self,
         id: Manifest::PluginId,
@@ -490,6 +518,7 @@ where
 
     /// Get a reference to the plugin with the given id, if it is currently loaded and if the
     /// specified type `T` is the plugin's concrete type.
+    #[must_use]
     pub fn get_loaded<T>(&self, id: Manifest::PluginId) -> Option<&T>
     where
         T: Plugin<Manifest::PluginId, Context>,
@@ -499,6 +528,7 @@ where
 
     /// Get a mutable reference to the plugin with the given id, if it is currently loaded and if
     /// the specified type `T` is the plugin's concrete type.
+    #[must_use]
     pub fn get_loaded_mut<T>(&mut self, id: Manifest::PluginId) -> Option<&mut T>
     where
         T: Plugin<Manifest::PluginId, Context>,
@@ -508,6 +538,7 @@ where
 
     /// Get a reference to the dyn plugin object of the plugin with the given id if it is currently
     /// enabled.
+    #[must_use]
     pub fn get_enabled_plugin(
         &self,
         id: Manifest::PluginId,
@@ -522,6 +553,7 @@ where
 
     /// Get a mutable reference to the dyn plugin object of the plugin with the given id if it is currently
     /// enabled.
+    #[must_use]
     pub fn get_enabled_plugin_mut(
         &mut self,
         id: Manifest::PluginId,
@@ -536,6 +568,7 @@ where
 
     /// Get a reference to the plugin with the given id, if it is currently enabled and if the
     /// specified type `T` is the plugin's concrete type.
+    #[must_use]
     pub fn get_enabled<T>(&self, id: Manifest::PluginId) -> Option<&T>
     where
         T: Plugin<Manifest::PluginId, Context>,
@@ -545,6 +578,7 @@ where
 
     /// Get a mutable reference to the plugin with the given id, if it is currently enabled and if
     /// the specified type `T` is the plugin's concrete type.
+    #[must_use]
     pub fn get_enabled_mut<T>(&mut self, id: Manifest::PluginId) -> Option<&mut T>
     where
         T: Plugin<Manifest::PluginId, Context>,

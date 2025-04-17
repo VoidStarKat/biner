@@ -130,6 +130,7 @@ where
     }
 
     /// Gets whether any hooks have been added by the specified plugin for a hook slot.
+    #[must_use]
     pub fn exists<Slot>(&self, plugin: Id) -> bool
     where
         Slot: HookSlot,
@@ -139,6 +140,7 @@ where
     }
 
     /// Gets whether a hook with the exact name was added by the specified plugin for a hook slot.
+    #[must_use]
     pub fn exists_exact<Slot>(&self, plugin: Id, name: Option<Id>) -> bool
     where
         Slot: HookSlot,
@@ -180,6 +182,7 @@ where
     }
 
     /// Get the first dyn object hook added by a plugin for the hook slot.
+    #[must_use]
     pub fn get_first<Slot>(&self, plugin: Id) -> Option<&Slot::TraitObject>
     where
         Slot: HookSlot,
@@ -194,6 +197,7 @@ where
     }
 
     /// Get the dyn object hook with the specified name added by a plugin for the hook slot.
+    #[must_use]
     pub fn get_exact<Slot>(&self, plugin: Id, name: Option<Id>) -> Option<&Slot::TraitObject>
     where
         Slot: HookSlot,
@@ -208,6 +212,7 @@ where
     }
 
     /// Get the first dyn mutable object hook added by a plugin for the hook slot.
+    #[must_use]
     pub fn get_first_mut<Slot>(&mut self, plugin: Id) -> Option<&mut Slot::TraitObject>
     where
         Slot: HookSlot,
@@ -222,6 +227,7 @@ where
     }
 
     /// Get the dyn mutable object hook with the specified name added by a plugin for the hook slot.
+    #[must_use]
     pub fn get_exact_mut<Slot>(
         &mut self,
         plugin: Id,
@@ -288,6 +294,7 @@ where
 
     /// Get an iterator over the plugin hooks for the specified slot. This is often simply a single
     /// hook unless unique names are used when registering multiple hooks.
+    #[must_use]
     pub fn plugin_slot_hooks<Slot>(
         &self,
         plugin: Id,
@@ -309,6 +316,7 @@ where
 
     /// Get an iterator over the mutable plugin hooks for the specified slot. This is often simply a
     /// single hook unless unique names are used when registering multiple hooks.
+    #[must_use]
     pub fn plugin_slot_hooks_mut<Slot>(
         &mut self,
         plugin: Id,
@@ -330,6 +338,7 @@ where
 
     /// Get an iterator over all the hooks from all plugins registered to a slot, including the id
     /// of the plugin that registered that slot.
+    #[must_use]
     pub fn slot_hooks_and_plugin<Slot>(&self) -> impl FusedIterator<Item = (Id, &Slot::TraitObject)>
     where
         Slot: HookSlot,
@@ -347,6 +356,7 @@ where
 
     /// Get an iterator over all the mutable hooks from all plugins registered to a slot, including \
     /// the id of the plugin that registered that slot.
+    #[must_use]
     pub fn slot_hooks_and_plugin_mut<Slot>(
         &mut self,
     ) -> impl FusedIterator<Item = (Id, &mut Slot::TraitObject)>

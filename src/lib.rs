@@ -158,23 +158,24 @@ mod tests {
         Box::new(TestPlugin)
     }
 
-    static TEST_MANIFEST: SimplePluginManifest =
-        SimplePluginManifest::new("test", "test description");
-
     register_static_plugin! {
         TEST_PLUGIN_SLOT:
         init_test_plugin
-        TEST_MANIFEST.clone();
+        SimplePluginManifest::new("test", "test description");
         new_test_plugin
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn static_plugin_slot() {
         let mut plugins = PluginRegistry::from_initializers(TEST_PLUGIN_SLOT);
 
         assert_eq!(plugins.plugin_count(), 1);
         assert!(plugins.exists("test"));
-        assert_eq!(plugins.get_manifest("test").unwrap(), &TEST_MANIFEST);
+        assert_eq!(
+            plugins.get_manifest("test").unwrap(),
+            &SimplePluginManifest::new("test", "test description")
+        );
         assert_eq!(plugins.plugin_ids().collect::<Vec<_>>(), vec!["test"]);
 
         assert!(!plugins.is_loaded("test"));
