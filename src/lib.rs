@@ -29,7 +29,10 @@ pub use plugin::*;
 ///     let plugins = PluginRegistry::from_initializers(MY_PLUGINS);
 ///     // ...
 /// }
-/// # fn main() { init_plugin_host(); }
+/// # fn main() {
+/// #   #[cfg(not(miri))]
+/// #   init_plugin_host();
+/// # }
 /// ```
 ///
 /// If the plugin host wishes to use custom plugin manifests or a plugin context, add the declare
@@ -45,7 +48,10 @@ pub use plugin::*;
 ///     let plugins = PluginRegistry::from_initializers(MY_PLUGINS);
 ///     // ...
 /// }
-/// # fn main() { init_plugin_host(); }
+/// # fn main() {
+/// #   #[cfg(not(miri))]
+/// #   init_plugin_host();
+/// # }
 /// ```
 #[macro_export]
 macro_rules! static_plugin_slot {
