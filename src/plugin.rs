@@ -98,7 +98,7 @@ pub trait PluginManifest {
 /// A default [`PluginManifest`] providing only the most basic required functionality of a manifest.
 /// It is generic over plugin id to still allow easy plugin host choice over the id type.
 /// It supports a basic plugin dependency list and a description of the plugin.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
 pub struct SimplePluginManifest<Id = &'static str> {
     id: Id,
     description: &'static str,
@@ -107,7 +107,7 @@ pub struct SimplePluginManifest<Id = &'static str> {
 
 impl<Id> SimplePluginManifest<Id> {
     /// Create a plugin manifest with a given plugin id and description and no plugin dependencies.
-    pub fn new(id: Id, description: &'static str) -> Self {
+    pub const fn new(id: Id, description: &'static str) -> Self {
         Self {
             id,
             description,
@@ -117,7 +117,11 @@ impl<Id> SimplePluginManifest<Id> {
 
     /// Create a plugin manifest with a given plugin id and description and a list of plugin
     /// dependencies.
-    pub fn with_dependencies(id: Id, description: &'static str, dependencies: Vec<Id>) -> Self {
+    pub const fn with_dependencies(
+        id: Id,
+        description: &'static str,
+        dependencies: Vec<Id>,
+    ) -> Self {
         Self {
             id,
             description,
@@ -126,7 +130,7 @@ impl<Id> SimplePluginManifest<Id> {
     }
 
     /// Get the description of the plugin.
-    pub fn description(&self) -> &str {
+    pub const fn description(&self) -> &str {
         self.description
     }
 }

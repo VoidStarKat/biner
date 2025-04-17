@@ -11,7 +11,7 @@ pub use plugin::*;
 
 /// Declares a slot for hosting static plugin initializers that can be registered in client plugins
 /// by [`register_static_plugin`]. The plugin host can then use
-/// [`PluginRegistry::from_initializers`] to automatically discover and register all staticly
+/// [`PluginRegistry::from_initializers`] to automatically discover and register all statically
 /// declared plugins.
 ///
 /// This static initialization occurs without any life-before-main and is implemented purely in
@@ -24,11 +24,28 @@ pub use plugin::*;
 ///
 /// // Plugin host declares the slot
 /// static_plugin_slot!(pub MY_PLUGINS);
+///
 /// fn init_plugin_host() {
 ///     let plugins = PluginRegistry::from_initializers(MY_PLUGINS);
 ///     // ...
 /// }
-/// # init_plugin_host()
+/// # fn main() { init_plugin_host(); }
+/// ```
+///
+/// If the plugin host wishes to use custom plugin manifests or a plugin context, add the declare
+/// the types in the slot.
+///
+/// ```standalone_crate
+/// use biner::{static_plugin_slot, PluginRegistry, SimplePluginManifest};
+/// // Plugin host declares the using `i32` as plugin id and a `String` as a plugin context
+///
+/// static_plugin_slot!(pub MY_PLUGINS<SimplePluginManifest<i32>, String>);
+///
+/// fn init_plugin_host() {
+///     let plugins = PluginRegistry::from_initializers(MY_PLUGINS);
+///     // ...
+/// }
+/// # fn main() { init_plugin_host(); }
 /// ```
 #[macro_export]
 macro_rules! static_plugin_slot {
@@ -91,7 +108,7 @@ macro_rules! register_static_plugin {
         $(#[$meta])*
         #[$crate::static_plugin_initializer($slot)]
         $pub fn $name(registry: &mut $crate::PluginRegistry$(<$($targ),+>)?) {
-            registry.register($manifest, ::std::option::Option::Some($init));
+            registry.register($manifest, ::std::option::Option::Some($init)).unwrap();
         }
     };
 }
@@ -111,6 +128,8 @@ macro_rules! register_static_plugin {
 /// }
 ///
 /// hook_slot!(pub MyHookSlot: dyn MyHookTrait);
+///
+/// # fn main() {}
 /// ```
 #[macro_export]
 macro_rules! hook_slot {
@@ -127,12 +146,59 @@ macro_rules! hook_slot {
 
 #[cfg(test)]
 mod tests {
-    use crate::PluginRegistry;
+    use crate::{Plugin, PluginRegistry, SimplePluginManifest};
 
     static_plugin_slot!(pub TEST_PLUGIN_SLOT);
 
+    struct TestPlugin;
+
+    impl Plugin for TestPlugin {}
+
+    fn new_test_plugin() -> Box<dyn Plugin> {
+        Box::new(TestPlugin)
+    }
+
+    static TEST_MANIFEST: SimplePluginManifest =
+        SimplePluginManifest::new("test", "test description");
+
+    register_static_plugin! {
+        TEST_PLUGIN_SLOT:
+        init_test_plugin
+        TEST_MANIFEST.clone();
+        new_test_plugin
+    }
+
     #[test]
     fn static_plugin_slot() {
-        let _ = PluginRegistry::from_initializers(TEST_PLUGIN_SLOT);
+        let mut plugins = PluginRegistry::from_initializers(TEST_PLUGIN_SLOT);
+
+        assert_eq!(plugins.plugin_count(), 1);
+        assert!(plugins.exists("test"));
+        assert_eq!(plugins.get_manifest("test").unwrap(), &TEST_MANIFEST);
+        assert_eq!(plugins.plugin_ids().collect::<Vec<_>>(), vec!["test"]);
+
+        assert!(!plugins.is_loaded("test"));
+        assert!(!plugins.is_enabled("test"));
+        assert!(plugins.get_loaded::<TestPlugin>("test").is_none());
+        assert!(plugins.get_loaded_plugin("test").is_none());
+        assert!(plugins.get_enabled::<TestPlugin>("test").is_none());
+        assert!(plugins.get_enabled_plugin("test").is_none());
+
+        let mut context = ();
+
+        plugins.load("test", &mut context).unwrap();
+        plugins.enable("test", &mut context).unwrap();
+
+        assert_eq!(plugins.disable("test", &mut ()).into_iter().count(), 1);
+        let (unloaded, disabled) = plugins.unload("test", &mut context);
+        assert_eq!(unloaded.into_iter().count(), 1);
+        assert_eq!(disabled.into_iter().count(), 0);
+
+        plugins.enable("test", &mut context).unwrap();
+        let (unloaded, disabled) = plugins.unload("test", &mut context);
+        assert_eq!(unloaded.into_iter().count(), 1);
+        assert_eq!(disabled.into_iter().count(), 1);
+
+        assert!(plugins.remove("test", &mut context).0);
     }
 }
